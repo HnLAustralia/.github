@@ -1,34 +1,45 @@
 name: _dotnet-windows-build
+
 on:
   workflow_call:
     inputs:
-      dotnet_version:
-        required: false
+      project-or-solution:
+        description: Path to .sln/.csproj
+        type: string
+        required: true
+      dotnet-version:
+        description: .NET SDK (e.g., 8.0.x)
         type: string
         default: '8.0.x'
-      project-or-solution:
-        required: true
+      configuration:
         type: string
-      test-project-or-solution:
-        required: false
-        type: string
-        default: ''
-      rid:
+        default: 'Release'
+      runtime:
+        description: Publish RID
         type: string
         default: 'win-x86'
-      run_tests:
+      self-contained:
         type: boolean
         default: false
+      publish:
+        type: boolean
+        default: true
+      test-project-or-solution:
+        description: Optional test project/solution
+        type: string
+        default: ''
     outputs:
       artifact_name:
-        description: "Name of the build output artifact (if produced)"
+        description: Name of the build output artifact (if produced)
         value: ${{ jobs.build.outputs.artifact_name }}
 
 jobs:
   build:
     runs-on: windows-latest
     env:
-      DOTNET_CLI_TELEMETRY_OPTOUT: 1    
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+    outputs:
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
 
     steps:
       - uses: actions/checkout@v4
@@ -36,10 +47,35 @@ jobs:
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: ${{ inputs.dotnet_version }}
+          dotnet-version: ${{ inputs['dotnet-version'] }}
 
       - name: Restore
-        run: dotnet restore "${{ inputs.project-or-solution }}"
+        run: dotnet restore "${{ inputs['project-or-solution'] }}"
 
       - name: Build
-        run: dotnet build "${{ inputs.project-or-solution }}" --configuration Release --no-restore
+        run: dotnet build "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-restore
+
+      - name: Test
+        if: ${{ inputs['test-project-or-solution'] != '' }}
+        run: dotnet test "${{ inputs['test-project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-build --verbosity normal
+
+      - name: Publish
+        if: ${{ inputs.publish }}
+        run: >
+          dotnet publish "${{ inputs['project-or-solution'] }}"
+          -c "${{ inputs.configuration }}"
+          -r "${{ inputs.runtime }}"
+          --self-contained ${{ inputs['self-contained'] }}
+          --no-build
+          -o out
+
+      - id: meta
+        if: ${{ inputs.publish }}
+        run: echo "artifact_name=app-${{ inputs['dotnet-version'] }}" >> $env:GITHUB_OUTPUT
+
+      - name: Upload artifact
+        if: ${{ inputs.publish }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: out
