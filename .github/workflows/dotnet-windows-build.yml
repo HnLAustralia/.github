@@ -168,9 +168,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ([string]::IsNullOrWhiteSpace("${{ secrets.CODESIGN_PFX_B64 }}") -or
-              [string]::IsNullOrWhiteSpace("${{ secrets.CODESIGN_PFX_PASSWORD }}")) {
-            throw "sign-nuget=true but CODESIGN_PFX_B64 / CODESIGN_PFX_PASSWORD not provided to the reusable workflow."
+          if ([string]::IsNullOrWhiteSpace("${{ secrets.HALDEVCERT_PFX_B64 }}") -or
+              [string]::IsNullOrWhiteSpace("${{ secrets.HALDEVCERT_PFX_PASSWORD }}")) {
+            throw "sign-nuget=true but HALDEVCERT_PFX_B64 / HALDEVCERT_PFX_PASSWORD not provided to the reusable workflow."
           }
       
       # Write PFX from secret
@@ -178,11 +178,11 @@ jobs:
         if: ${{ inputs.sign-nuget }}
         shell: pwsh
         run: |
-          $bytes = [Convert]::FromBase64String("${{ secrets.CODESIGN_PFX_B64 }}")
-          [IO.File]::WriteAllBytes("codesign.pfx", $bytes)
-          $len = (Get-Item "codesign.pfx").Length
-          if ($len -lt 1024) { throw "codesign.pfx looks too small ($len bytes). Check CODESIGN_PFX_B64." }
-          "CODESIGN_PWD=${{ secrets.CODESIGN_PFX_PASSWORD }}" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $bytes = [Convert]::FromBase64String("${{ secrets.HALDEVCERT_PFX_B64 }}")
+          [IO.File]::WriteAllBytes("HalDevCert.pfx", $bytes)
+          $len = (Get-Item "HalDevCert.pfx").Length
+          if ($len -lt 1024) { throw "HalDevCert.pfx looks too small ($len bytes). Check HALDEVCERT_PFX_B64." }
+          "HALDEVCERT_PWD=${{ secrets.HALDEVCERT_PFX_PASSWORD }}" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # NuGet sign packages
       - name: NuGet sign packages
@@ -190,8 +190,8 @@ jobs:
         shell: pwsh
         run: |
           nuget sign "nupkg\*.nupkg" `
-            -CertificatePath codesign.pfx `
-            -CertificatePassword $env:CODESIGN_PWD `
+            -CertificatePath HalDevCert.pfx `
+            -CertificatePassword $env:HALDEVCERT_PWD `
             -Timestamper https://timestamp.digicert.com `
             -NonInteractive `
             -Overwrite
