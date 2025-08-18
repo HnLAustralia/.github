@@ -24,6 +24,9 @@ on:
       publish:
         type: boolean
         default: true
+      upload:
+        type: boolean
+        default: false
       test-project-or-solution:
         description: Optional test project/solution
         type: string
@@ -38,7 +41,7 @@ on:
         description: Run nuget restore for packages.config projects
         type: boolean
         default: false
-      # 🆕 Switch to full MSBuild (good for mixed/legacy solutions)
+      # Switch to full MSBuild (good for mixed/legacy solutions)
       build-with-msbuild:
         description: Use Visual Studio MSBuild instead of dotnet build
         type: boolean
@@ -114,7 +117,7 @@ jobs:
         run: echo "artifact_name=app-${{ inputs['dotnet-version'] }}" >> $env:GITHUB_OUTPUT
 
       - name: Upload artifact
-        if: ${{ inputs.publish }}
+        if: ${{ inputs.upload }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.meta.outputs.artifact_name }}
