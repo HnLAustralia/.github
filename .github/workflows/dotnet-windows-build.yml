@@ -28,6 +28,10 @@ on:
         description: Optional test project/solution
         type: string
         default: ''
+      install-framework-461:
+        description: Install .NET Framework 4.6.1 targeting pack
+        type: boolean
+        default: false
     outputs:
       artifact_name:
         description: Name of the build output artifact (if produced)
