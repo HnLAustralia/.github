@@ -28,10 +28,21 @@ on:
         description: Optional test project/solution
         type: string
         default: ''
+      # Only when a repo has net461 targets or props that need it
       install-framework-461:
         description: Install .NET Framework 4.6.1 targeting pack
         type: boolean
         default: false
+      # Only when a repo actually needs legacy NuGet packages.config
+      use-nuget-restore:
+        description: Run nuget restore for packages.config projects
+        type: boolean
+        default: false
+      # 🆕 Switch to full MSBuild (good for mixed/legacy solutions)
+      build-with-msbuild:
+        description: Use Visual Studio MSBuild instead of dotnet build
+        type: boolean
+        default: false    
     outputs:
       artifact_name:
         description: Name of the build output artifact (if produced)
@@ -61,12 +72,21 @@ jobs:
 
       # Make sure NuGet CLI is available for packages.config restore
       - name: Setup NuGet
+        if: ${{ inputs.use-nuget-restore }}
         uses: NuGet/setup-nuget@v2
 
       - name: Restore
         run: dotnet restore "${{ inputs['project-or-solution'] }}" -NonInteractive
 
+       # Choose build engine
+      - name: Build (MSBuild)
+        if: ${{ inputs.build-with-msbuild }}
+        shell: cmd
+        run: |
+          "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" ^
+            "${{ inputs['project-or-solution'] }}" /m /p:Configuration=${{ inputs.configuration }} /v:m
       - name: Build
+        if: ${{ !inputs.build-with-msbuild }}
         run: dotnet build "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-restore
 
       - name: Test
