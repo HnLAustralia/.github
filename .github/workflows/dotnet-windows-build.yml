@@ -23,7 +23,7 @@ on:
         default: false
       publish:
         type: boolean
-        default: true
+        default: false
       pack:
         type: boolean
         default: false
