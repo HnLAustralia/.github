@@ -24,6 +24,17 @@ on:
       publish:
         type: boolean
         default: true
+      pack:
+        type: boolean
+        default: false
+      nuspec-path:
+        description: Path to .nuspec (relative to repo root)
+        type: string
+        default: ''
+      sign-nuget:
+        description: Sign produced .nupkg via NuGet sign (requires PFX secrets)
+        type: boolean
+        default: false
       upload:
         type: boolean
         default: false
@@ -48,7 +59,7 @@ on:
         default: false    
     outputs:
       artifact_name:
-        description: Name of the build output artifact (if produced)
+        description: Name of published app artifact (if produced)
         value: ${{ jobs.build.outputs.artifact_name }}
 
 jobs:
@@ -122,3 +133,38 @@ jobs:
         with:
           name: ${{ steps.meta.outputs.artifact_name }}
           path: out
+
+      - name: NuGet pack (.nuspec)
+        if: ${{ inputs.pack && inputs['nuspec-path'] != '' }}
+        shell: pwsh
+        run: |
+          $args = @(
+          "pack", "${{ inputs['nuspec-path'] }}",
+          "-OutputDirectory", "nupkg",
+          "-Properties", "Configuration=${{ inputs.configuration }}",
+          "-Symbols", "-SymbolPackageFormat", "snupkg"
+          )
+          if ("${{ inputs['package-version'] }}") {
+          $args += @("-Version", "${{ inputs['package-version'] }}")
+          }
+          nuget @args
+
+      # --- SIGN (author signing with PFX) ---
+      - name: NuGet sign packages
+        if: ${{ inputs.sign-nuget && hashFiles('nupkg/**/*.nupkg') != '' }}
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes("codesign.pfx",[Convert]::FromBase64String("${{ secrets.CODESIGN_PFX_B64 }}"))
+          $env:CODESIGN_PWD = "${{ secrets.CODESIGN_PFX_PASSWORD }}"
+          nuget sign "nupkg\*.nupkg" `
+          -CertificatePath codesign.pfx `
+          -CertificatePassword $env:CODESIGN_PWD `
+          -Timestamper http://timestamp.digicert.com `
+          -Overwrite
+      # --- UPLOAD ---
+      - name: Upload NuGet packages
+        if: ${{ inputs.pack && hashFiles('nupkg/**/*.nupkg') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nupkgs
+          path: nupkg
