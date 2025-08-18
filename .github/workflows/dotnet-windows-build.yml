@@ -3,6 +3,7 @@ name: _dotnet-windows-build
 on:
   workflow_call:
     inputs:
+      # *** ENVIRONMENT ***
       project-or-solution:
         description: Path to .sln/.csproj
         type: string
@@ -11,6 +12,13 @@ on:
         description: .NET SDK (e.g., 8.0.x)
         type: string
         default: '8.0.x'
+      # Only when a repo has net461 targets or props that need it
+      install-framework-461:
+        description: Install .NET Framework 4.6.1 targeting pack
+        type: boolean
+        default: false
+        
+      # *** BUILD ***
       configuration:
         type: string
         default: 'Release'
@@ -24,6 +32,26 @@ on:
       publish:
         type: boolean
         default: false
+      setup-nuget:
+        type: boolean
+        default: false
+      use-nuget-restore:
+        description: Run nuget restore for packages.config projects
+        type: boolean
+        default: false
+      # Switch to full MSBuild (good for mixed/legacy solutions)
+      build-with-msbuild:
+        description: Use Visual Studio MSBuild instead of dotnet build
+        type: boolean
+        default: false    
+        
+      # *** TEST ***
+      test-project-or-solution:
+        description: Optional test project/solution
+        type: string
+        default: ''
+
+      # *** PUBLISH NUGET PACKAGE ***
       pack:
         type: boolean
         default: false
@@ -35,28 +63,12 @@ on:
         description: Sign produced .nupkg via NuGet sign (requires PFX secrets)
         type: boolean
         default: false
+
+      # *** PUBLISH INSTALLER PACKAGE ***
       upload:
         type: boolean
         default: false
-      test-project-or-solution:
-        description: Optional test project/solution
-        type: string
-        default: ''
-      # Only when a repo has net461 targets or props that need it
-      install-framework-461:
-        description: Install .NET Framework 4.6.1 targeting pack
-        type: boolean
-        default: false
-      # Only when a repo actually needs legacy NuGet packages.config
-      use-nuget-restore:
-        description: Run nuget restore for packages.config projects
-        type: boolean
-        default: false
-      # Switch to full MSBuild (good for mixed/legacy solutions)
-      build-with-msbuild:
-        description: Use Visual Studio MSBuild instead of dotnet build
-        type: boolean
-        default: false    
+        
     outputs:
       artifact_name:
         description: Name of published app artifact (if produced)
@@ -72,6 +84,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      
+      # *** ENVIRONMENT ***
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
@@ -86,7 +100,7 @@ jobs:
 
       # Make sure NuGet CLI is available for packages.config restore
       - name: Setup NuGet
-        if: ${{ inputs.use-nuget-restore }}
+        if: ${{ inputs.setup-nuget }}
         uses: NuGet/setup-nuget@v2
 
       # packages.config restore (puts NUnit.props etc. in ./packages)
@@ -98,7 +112,9 @@ jobs:
       - name: Restore
         run: dotnet restore "${{ inputs['project-or-solution'] }}"
 
-       # Choose build engine
+      # *** BUILD ***
+
+      # Choose build engine
       - name: Build (MSBuild)
         if: ${{ inputs.build-with-msbuild }}
         shell: cmd
@@ -108,10 +124,6 @@ jobs:
       - name: Build
         if: ${{ !inputs.build-with-msbuild }}
         run: dotnet build "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-restore
-
-      - name: Test
-        if: ${{ inputs['test-project-or-solution'] != '' }}
-        run: dotnet test "${{ inputs['test-project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-build --verbosity normal
 
       - name: Publish
         if: ${{ inputs.publish }}
@@ -127,12 +139,13 @@ jobs:
         if: ${{ inputs.publish }}
         run: echo "artifact_name=app-${{ inputs['dotnet-version'] }}" >> $env:GITHUB_OUTPUT
 
-      - name: Upload artifact
-        if: ${{ inputs.upload }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.meta.outputs.artifact_name }}
-          path: out
+      # *** TEST ***
+
+      - name: Test
+        if: ${{ inputs['test-project-or-solution'] != '' }}
+        run: dotnet test "${{ inputs['test-project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-build --verbosity normal
+
+      # *** PUBLISH NUGET PACKAGE ***
 
       - name: NuGet pack (.nuspec)
         if: ${{ inputs.pack && inputs['nuspec-path'] != '' }}
@@ -149,22 +162,52 @@ jobs:
           }
           nuget @args
 
-      # --- SIGN (author signing with PFX) ---
+      # Validate signing secrets
+      - name: Validate signing secrets
+        if: ${{ inputs.sign-nuget }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace("${{ secrets.CODESIGN_PFX_B64 }}") -or
+              [string]::IsNullOrWhiteSpace("${{ secrets.CODESIGN_PFX_PASSWORD }}")) {
+            throw "sign-nuget=true but CODESIGN_PFX_B64 / CODESIGN_PFX_PASSWORD not provided to the reusable workflow."
+          }
+      
+      # Write PFX from secret
+      - name: Write PFX from secret
+        if: ${{ inputs.sign-nuget }}
+        shell: pwsh
+        run: |
+          $bytes = [Convert]::FromBase64String("${{ secrets.CODESIGN_PFX_B64 }}")
+          [IO.File]::WriteAllBytes("codesign.pfx", $bytes)
+          $len = (Get-Item "codesign.pfx").Length
+          if ($len -lt 1024) { throw "codesign.pfx looks too small ($len bytes). Check CODESIGN_PFX_B64." }
+          "CODESIGN_PWD=${{ secrets.CODESIGN_PFX_PASSWORD }}" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # NuGet sign packages
       - name: NuGet sign packages
         if: ${{ inputs.sign-nuget && hashFiles('nupkg/**/*.nupkg') != '' }}
         shell: pwsh
         run: |
-          [IO.File]::WriteAllBytes("codesign.pfx",[Convert]::FromBase64String("${{ secrets.CODESIGN_PFX_B64 }}"))
-          $env:CODESIGN_PWD = "${{ secrets.CODESIGN_PFX_PASSWORD }}"
           nuget sign "nupkg\*.nupkg" `
-          -CertificatePath codesign.pfx `
-          -CertificatePassword $env:CODESIGN_PWD `
-          -Timestamper http://timestamp.digicert.com `
-          -Overwrite
-      # --- UPLOAD ---
+            -CertificatePath codesign.pfx `
+            -CertificatePassword $env:CODESIGN_PWD `
+            -Timestamper https://timestamp.digicert.com `
+            -NonInteractive `
+            -Overwrite
+
       - name: Upload NuGet packages
         if: ${{ inputs.pack && hashFiles('nupkg/**/*.nupkg') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: nupkgs
           path: nupkg
+
+      # *** PUBLISH INSTALLER PACKAGE ***
+
+      - name: Upload artifact
+        if: ${{ inputs.upload }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: out
