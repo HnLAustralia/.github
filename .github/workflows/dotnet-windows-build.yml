@@ -49,8 +49,18 @@ jobs:
         with:
           dotnet-version: ${{ inputs['dotnet-version'] }}
 
+      # Install .NET Framework 4.6.1 targeting pack if requested
+      - name: Install .NET Framework 4.6.1 targeting pack
+        if: ${{ inputs.install-framework-461 }}
+        shell: powershell
+        run: choco install netfx-4.6.1-devpack -y
+
+      # Make sure NuGet CLI is available for packages.config restore
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
       - name: Restore
-        run: dotnet restore "${{ inputs['project-or-solution'] }}"
+        run: dotnet restore "${{ inputs['project-or-solution'] }}" -NonInteractive
 
       - name: Build
         run: dotnet build "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-restore
