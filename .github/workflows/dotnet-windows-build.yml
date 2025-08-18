@@ -75,8 +75,14 @@ jobs:
         if: ${{ inputs.use-nuget-restore }}
         uses: NuGet/setup-nuget@v2
 
+      # packages.config restore (puts NUnit.props etc. in ./packages)
+      - name: NuGet restore (packages.config)
+        if: ${{ inputs.use-nuget-restore }}
+        run: nuget restore "${{ inputs['project-or-solution'] }}" -NonInteractive
+
+      # SDK-style restore (global cache)
       - name: Restore
-        run: dotnet restore "${{ inputs['project-or-solution'] }}" -NonInteractive
+        run: dotnet restore "${{ inputs['project-or-solution'] }}"
 
        # Choose build engine
       - name: Build (MSBuild)
