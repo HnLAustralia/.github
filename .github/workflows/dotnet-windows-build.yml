@@ -74,6 +74,14 @@ on:
         description: Name of published app artifact (if produced)
         value: ${{ jobs.build.outputs.artifact_name }}
 
+    secrets:
+      HALDEVCERT_PFX_B64:
+        description: Base64-encoded HalDevCert.pfx for NuGet signing
+        required: false
+      HALDEVCERT_PFX_PASSWORD:
+        description: Password for HalDevCert.pfx
+        required: false
+
 jobs:
   build:
     runs-on: windows-latest
