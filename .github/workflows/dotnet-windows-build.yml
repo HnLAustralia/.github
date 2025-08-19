@@ -247,12 +247,24 @@ jobs:
             }
           }
 
-      - name: Upload NuGet packages
-        if: ${{ inputs.pack && hashFiles('nupkg/**/*.nupkg') != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: nupkgs
-          path: nupkg
+      - name: Publish to GitHub Packages (NuGet)
+        shell: pwsh
+        run: |
+          $owner = "${{ github.repository_owner }}"
+          dotnet nuget add source `
+            --name "github" `
+            "https://nuget.pkg.github.com/$owner/index.json" `
+            --username "${{ github.actor }}" `
+            --password "${{ secrets.GITHUB_TOKEN }}" `
+            --store-password-in-clear-text
+      
+          Get-ChildItem -Path nupkg -Filter *.nupkg | ForEach-Object {
+            Write-Host "Pushing $($_.Name) to GitHub Packages…"
+            dotnet nuget push $_.FullName `
+              --source "github" `
+              --skip-duplicate
+            if ($LASTEXITCODE -ne 0) { throw "nuget push failed for $($_.Name)" }
+          }
 
       # *** PUBLISH INSTALLER PACKAGE ***
 
