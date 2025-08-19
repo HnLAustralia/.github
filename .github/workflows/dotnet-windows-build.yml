@@ -192,17 +192,57 @@ jobs:
           if ($len -lt 1024) { throw "HalDevCert.pfx looks too small ($len bytes). Check HALDEVCERT_PFX_B64." }
           "HALDEVCERT_PWD=${{ secrets.HALDEVCERT_PFX_PASSWORD }}" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      # NuGet sign packages
-      - name: NuGet sign packages
-        if: ${{ inputs.sign-nuget && hashFiles('nupkg/**/*.nupkg') != '' }}
+      # Sign all .nupkg with RFC3161 timestamp (retry + fallback). Hard-fail if timestamping can't be obtained.
+      - name: NuGet sign (ALWAYS timestamp, with retries)
+        if: ${{ hashFiles('nupkg/**/*.nupkg') != '' && inputs.sign-nuget }}
         shell: pwsh
         run: |
-          nuget sign "nupkg\*.nupkg" `
-            -CertificatePath HalDevCert.pfx `
-            -CertificatePassword $env:HALDEVCERT_PWD `
-            -Timestamper https://timestamp.digicert.com `
-            -NonInteractive `
-            -Overwrite
+          $ErrorActionPreference = 'Stop'
+      
+          # Write PFX and set password env (if you haven't already done so earlier)
+          if (-not (Test-Path HalDevCert.pfx)) {
+            [IO.File]::WriteAllBytes("HalDevCert.pfx",[Convert]::FromBase64String("${{ secrets.HALDEVCERT_PFX_B64 }}"))
+            $env:HALDEVCERT_PWD = "${{ secrets.HALDEVCERT_PFX_PASSWORD }}"
+          }
+      
+          # OPTIONAL: suppress NU3018 on the runner if you're using a self-signed cert
+          try {
+            $pwd  = ConvertTo-SecureString $env:HALDEVCERT_PWD -AsPlainText -Force
+            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2("HalDevCert.pfx",$pwd)
+            if ($cert.Issuer -eq $cert.Subject) {
+              [IO.File]::WriteAllBytes("HalDevCert.cer",$cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+              certutil -addstore -f Root HalDevCert.cer | Out-Null
+            }
+          } catch { }
+      
+          # Timestamp servers to try (HTTP tends to be more reliable on runners)
+          $tsas = @(
+            'http://timestamp.digicert.com',
+            'http://timestamp.sectigo.com',
+            'http://rfc3161timestamp.globalsign.com/advanced'
+          )
+          $maxAttempts = 3
+      
+          foreach ($pkg in Get-ChildItem -Path nupkg -Filter *.nupkg) {
+            $signed = $false
+            foreach ($tsa in $tsas) {
+              for ($i=1; $i -le $maxAttempts; $i++) {
+                Write-Host "Signing $($pkg.Name) (attempt $i/$maxAttempts) via $tsa"
+                nuget sign $pkg.FullName `
+                  -CertificatePath HalDevCert.pfx `
+                  -CertificatePassword $env:HALDEVCERT_PWD `
+                  -Timestamper $tsa `
+                  -NonInteractive `
+                  -Overwrite
+                if ($LASTEXITCODE -eq 0) { $signed = $true; break }
+                Start-Sleep -Seconds ([int][Math]::Min(10, [Math]::Pow(2, $i))) # 2/4/8
+              }
+              if ($signed) { break }
+            }
+            if (-not $signed) {
+              throw "Timestamping failed for $($pkg.Name) after retries across all TSAs."
+            }
+          }
 
       - name: Upload NuGet packages
         if: ${{ inputs.pack && hashFiles('nupkg/**/*.nupkg') != '' }}
