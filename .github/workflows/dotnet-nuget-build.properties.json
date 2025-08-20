@@ -1,0 +1,6 @@
+{
+  "name": ".NET Windows app – build & test",
+  "description": "Builds, tests, and publishes a .NET (WPF/WinForms/WinUI) Windows app on windows-latest.",
+  "iconName": "dotnet",
+  "filePatterns": ["*.sln", "*.csproj", "Directory.Build.props"]
+}
