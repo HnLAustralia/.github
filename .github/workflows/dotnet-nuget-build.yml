@@ -1,8 +1,9 @@
-name: _dotnet-windows-build
+name: _dotnet-nuget-build
 
 on:
   workflow_call:
     inputs:
+      # *** ENVIRONMENT ***
       project-or-solution:
         description: Path to .sln/.csproj
         type: string
@@ -11,6 +12,13 @@ on:
         description: .NET SDK (e.g., 8.0.x)
         type: string
         default: '8.0.x'
+      # Only when a repo has net461 targets or props that need it
+      install-framework-461:
+        description: Install .NET Framework 4.6.1 targeting pack
+        type: boolean
+        default: false
+        
+      # *** BUILD ***
       configuration:
         type: string
         default: 'Release'
@@ -23,33 +31,57 @@ on:
         default: false
       publish:
         type: boolean
-        default: true
-      test-project-or-solution:
-        description: Optional test project/solution
-        type: string
-        default: ''
-      # Only when a repo has net461 targets or props that need it
-      install-framework-461:
-        description: Install .NET Framework 4.6.1 targeting pack
+        default: false
+      setup-nuget:
         type: boolean
         default: false
-      # Only when a repo actually needs legacy NuGet packages.config
       use-nuget-restore:
         description: Run nuget restore for packages.config projects
         type: boolean
         default: false
-      # 🆕 Switch to full MSBuild (good for mixed/legacy solutions)
+      # Switch to full MSBuild (good for mixed/legacy solutions)
       build-with-msbuild:
         description: Use Visual Studio MSBuild instead of dotnet build
         type: boolean
         default: false    
+        
+      # *** TEST ***
+      test-project-or-solution:
+        description: Optional test project/solution
+        type: string
+        default: ''
+
+      # *** PUBLISH NUGET PACKAGE ***
+      pack:
+        type: boolean
+        default: false
+      nuspec-path:
+        description: Path to .nuspec (relative to repo root)
+        type: string
+        default: ''
+      sign-nuget:
+        description: Sign produced .nupkg via NuGet sign (requires PFX secrets)
+        type: boolean
+        default: false
+
     outputs:
       artifact_name:
-        description: Name of the build output artifact (if produced)
+        description: Name of published app artifact (if produced)
         value: ${{ jobs.build.outputs.artifact_name }}
+
+    secrets:
+      HALDEVCERT_PFX_B64:
+        description: Base64-encoded HalDevCert.pfx for NuGet signing
+        required: false
+      HALDEVCERT_PFX_PASSWORD:
+        description: Password for HalDevCert.pfx
+        required: false
 
 jobs:
   build:
+    permissions:
+      contents: read
+      packages: write
     runs-on: windows-latest
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
@@ -58,6 +90,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      # *** ENVIRONMENT ***
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
@@ -72,7 +108,7 @@ jobs:
 
       # Make sure NuGet CLI is available for packages.config restore
       - name: Setup NuGet
-        if: ${{ inputs.use-nuget-restore }}
+        if: ${{ inputs.setup-nuget }}
         uses: NuGet/setup-nuget@v2
 
       # packages.config restore (puts NUnit.props etc. in ./packages)
@@ -84,7 +120,9 @@ jobs:
       - name: Restore
         run: dotnet restore "${{ inputs['project-or-solution'] }}"
 
-       # Choose build engine
+      # *** BUILD ***
+
+      # Choose build engine
       - name: Build (MSBuild)
         if: ${{ inputs.build-with-msbuild }}
         shell: cmd
@@ -94,10 +132,6 @@ jobs:
       - name: Build
         if: ${{ !inputs.build-with-msbuild }}
         run: dotnet build "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-restore
-
-      - name: Test
-        if: ${{ inputs['test-project-or-solution'] != '' }}
-        run: dotnet test "${{ inputs['test-project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-build --verbosity normal
 
       - name: Publish
         if: ${{ inputs.publish }}
@@ -113,9 +147,129 @@ jobs:
         if: ${{ inputs.publish }}
         run: echo "artifact_name=app-${{ inputs['dotnet-version'] }}" >> $env:GITHUB_OUTPUT
 
-      - name: Upload artifact
-        if: ${{ inputs.publish }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.meta.outputs.artifact_name }}
-          path: out
+      # *** TEST ***
+
+      - name: Test
+        if: ${{ inputs['test-project-or-solution'] != '' }}
+        run: dotnet test "${{ inputs['test-project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-build --verbosity normal
+
+      # *** PUBLISH NUGET PACKAGE ***
+
+      - name: NuGet pack (.nuspec)
+        if: ${{ inputs.pack && inputs['nuspec-path'] != '' }}
+        shell: pwsh
+        run: |
+          $args = @(
+          "pack", "${{ inputs['nuspec-path'] }}",
+          "-OutputDirectory", "nupkg",
+          "-Properties", "Configuration=${{ inputs.configuration }}",
+          "-Symbols", "-SymbolPackageFormat", "snupkg"
+          )
+          if ("${{ inputs['package-version'] }}") {
+          $args += @("-Version", "${{ inputs['package-version'] }}")
+          }
+          nuget @args
+
+      - name: Pack (SDK + MinVer)
+        if: ${{ inputs.pack && inputs['nuspec-path'] == '' }}
+        run: >
+          dotnet pack "${{ inputs['project-or-solution'] }}"
+          -c "${{ inputs.configuration }}"
+          -p:ContinuousIntegrationBuild=true    # ensures deterministic, SourceLink, etc.
+          -o nupkg
+          --no-build
+
+
+
+      # Validate signing secrets
+      - name: Validate signing secrets
+        if: ${{ inputs.sign-nuget }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace("${{ secrets.HALDEVCERT_PFX_B64 }}") -or
+              [string]::IsNullOrWhiteSpace("${{ secrets.HALDEVCERT_PFX_PASSWORD }}")) {
+            throw "sign-nuget=true but HALDEVCERT_PFX_B64 / HALDEVCERT_PFX_PASSWORD not provided to the reusable workflow."
+          }
+      
+      # Write PFX from secret
+      - name: Write PFX from secret
+        if: ${{ inputs.sign-nuget }}
+        shell: pwsh
+        run: |
+          $bytes = [Convert]::FromBase64String("${{ secrets.HALDEVCERT_PFX_B64 }}")
+          [IO.File]::WriteAllBytes("HalDevCert.pfx", $bytes)
+          $len = (Get-Item "HalDevCert.pfx").Length
+          if ($len -lt 1024) { throw "HalDevCert.pfx looks too small ($len bytes). Check HALDEVCERT_PFX_B64." }
+          "HALDEVCERT_PWD=${{ secrets.HALDEVCERT_PFX_PASSWORD }}" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # Sign all .nupkg with RFC3161 timestamp (retry + fallback). Hard-fail if timestamping can't be obtained.
+      - name: NuGet sign (ALWAYS timestamp, with retries)
+        if: ${{ hashFiles('nupkg/**/*.nupkg') != '' && inputs.sign-nuget }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+      
+          # Write PFX and set password env (if you haven't already done so earlier)
+          if (-not (Test-Path HalDevCert.pfx)) {
+            [IO.File]::WriteAllBytes("HalDevCert.pfx",[Convert]::FromBase64String("${{ secrets.HALDEVCERT_PFX_B64 }}"))
+            $env:HALDEVCERT_PWD = "${{ secrets.HALDEVCERT_PFX_PASSWORD }}"
+          }
+      
+          # OPTIONAL: suppress NU3018 on the runner if you're using a self-signed cert
+          try {
+            $pwd  = ConvertTo-SecureString $env:HALDEVCERT_PWD -AsPlainText -Force
+            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2("HalDevCert.pfx",$pwd)
+            if ($cert.Issuer -eq $cert.Subject) {
+              [IO.File]::WriteAllBytes("HalDevCert.cer",$cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+              certutil -addstore -f Root HalDevCert.cer | Out-Null
+            }
+          } catch { }
+      
+          # Timestamp servers to try (HTTP tends to be more reliable on runners)
+          $tsas = @(
+            'http://timestamp.digicert.com',
+            'http://timestamp.sectigo.com',
+            'http://rfc3161timestamp.globalsign.com/advanced'
+          )
+          $maxAttempts = 3
+      
+          foreach ($pkg in Get-ChildItem -Path nupkg -Filter *.nupkg) {
+            $signed = $false
+            foreach ($tsa in $tsas) {
+              for ($i=1; $i -le $maxAttempts; $i++) {
+                Write-Host "Signing $($pkg.Name) (attempt $i/$maxAttempts) via $tsa"
+                nuget sign $pkg.FullName `
+                  -CertificatePath HalDevCert.pfx `
+                  -CertificatePassword $env:HALDEVCERT_PWD `
+                  -Timestamper $tsa `
+                  -NonInteractive `
+                  -Overwrite
+                if ($LASTEXITCODE -eq 0) { $signed = $true; break }
+                Start-Sleep -Seconds ([int][Math]::Min(10, [Math]::Pow(2, $i))) # 2/4/8
+              }
+              if ($signed) { break }
+            }
+            if (-not $signed) {
+              throw "Timestamping failed for $($pkg.Name) after retries across all TSAs."
+            }
+          }
+
+      - name: Publish to GitHub Packages (NuGet)
+        shell: pwsh
+        run: |
+          $owner = "${{ github.repository_owner }}"
+          dotnet nuget add source `
+            --name "github" `
+            "https://nuget.pkg.github.com/$owner/index.json" `
+            --username "${{ github.actor }}" `
+            --password "${{ secrets.GITHUB_TOKEN }}" `
+            --store-password-in-clear-text
+      
+          Get-ChildItem -Path nupkg -Filter *.nupkg | ForEach-Object {
+            Write-Host "Pushing $($_.Name) to GitHub Packages…"
+            dotnet nuget push $_.FullName `
+              --source "github" `
+              --skip-duplicate
+            if ($LASTEXITCODE -ne 0) { throw "nuget push failed for $($_.Name)" }
+          }
