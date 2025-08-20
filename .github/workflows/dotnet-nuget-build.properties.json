@@ -1,6 +1,6 @@
 {
   "name": ".NET Windows app – build & test",
-  "description": "Builds, tests, and publishes a .NET (WPF/WinForms/WinUI) Windows app on windows-latest.",
+  "description": "Builds, tests, packs, and publishes a .NET nuget package",
   "iconName": "dotnet",
-  "filePatterns": ["*.sln", "*.csproj", "Directory.Build.props"]
+  "filePatterns": ["*.sln", "*.csproj", "Directory.Build.props", "Directory.Build.targets"]
 }
