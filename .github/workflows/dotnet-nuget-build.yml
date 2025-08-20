@@ -175,11 +175,10 @@ jobs:
         run: >
           dotnet pack "${{ inputs['project-or-solution'] }}"
           -c "${{ inputs.configuration }}"
-          -p:ContinuousIntegrationBuild=true    # ensures deterministic, SourceLink, etc.
+          -p:ContinuousIntegrationBuild=true
+          -p:OFFICIAL_SIGNING=true 
           -o nupkg
           --no-build
-
-
 
       # Validate signing secrets
       - name: Validate signing secrets
