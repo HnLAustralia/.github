@@ -299,18 +299,23 @@ jobs:
       - name: Publish prerelease (develop)
         if: ${{ steps.kind.outputs.KIND == 'prerelease' && inputs.pack }}
         shell: pwsh
+        env: 
+          OWNER: ${{ github.repository_owner }}
+          API_KEY: ${{ secrets.GH_PACKAGES_TOKEN != '' && secrets.GH_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }} 
         run: |
-          $owner = "${{ github.repository_owner }}"
+          # Recreate the source cleanly to avoid "already been added"
+          dotnet nuget remove source github | Out-Null 2>&1          
           dotnet nuget add source `
             --name "github" `
-            "https://nuget.pkg.github.com/$owner/index.json" `
+            "https://nuget.pkg.github.com/$env:OWNER/index.json" `
             --username "${{ github.actor }}" `
-            --password "${{ secrets.GITHUB_TOKEN }}" `
+            --password "$env:API_KEY" `
             --store-password-in-clear-text
             
           Get-ChildItem -Path nupkg -Filter *.nupkg | % {
             dotnet nuget push $_.FullName `
             --source "github" `
+            --api-key "$env:API_KEY" `
             --skip-duplicate
             if ($LASTEXITCODE -ne 0) { throw "nuget push failed for $($_.Name)" }
           }
@@ -318,18 +323,23 @@ jobs:
       - name: Publish release (tag v*)
         if: ${{ steps.kind.outputs.KIND == 'release' && inputs.pack }}
         shell: pwsh
+        env: 
+          OWNER: ${{ github.repository_owner }}
+          API_KEY: ${{ secrets.GH_PACKAGES_TOKEN != '' && secrets.GH_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }} 
         run: |
-          $owner = "${{ github.repository_owner }}"
+          # Recreate the source cleanly to avoid "already been added"
+          dotnet nuget remove source github | Out-Null 2>&1          
           dotnet nuget add source `
           --name "github" `
-          "https://nuget.pkg.github.com/$owner/index.json" `
+          "https://nuget.pkg.github.com/$env:OWNER/index.json" `
           --username "${{ github.actor }}" `
-          --password "${{ secrets.GITHUB_TOKEN }}" `
+          --password "$env:API_KEY" `
           --store-password-in-clear-text
           
           Get-ChildItem -Path nupkg -Filter *.nupkg | % {
             dotnet nuget push $_.FullName `
             --source "github" `
+            --api-key "$env:API_KEY" `
             --skip-duplicate
             if ($LASTEXITCODE -ne 0) { throw "nuget push failed for $($_.Name)" }
           }
