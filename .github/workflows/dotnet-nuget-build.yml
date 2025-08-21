@@ -109,19 +109,35 @@ jobs:
 
       - name: Add GitHub Packages source
         shell: bash
+        env:
+          PKG_OWNER: HnLAustralia
+          # Prefer PAT if provided (works across repos); else fall back to GITHUB_TOKEN
+          PKG_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN != '' && secrets.GH_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           dotnet nuget remove source github || true
-          dotnet nuget add source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
+          dotnet nuget add source "https://nuget.pkg.github.com/${PKG_OWNER}/index.json" \
             --name "github" \
-            --username "${{ github.repository_owner }}" \
-            --password "${{ secrets.GITHUB_TOKEN }}" \
+            --username "${PKG_OWNER}" \
+            --password "${PKG_TOKEN}" \
             --store-password-in-clear-text
           dotnet nuget list source
+
           
       # Make sure NuGet CLI is available for packages.config restore
       - name: Setup NuGet
         if: ${{ inputs.setup-nuget }}
         uses: NuGet/setup-nuget@v2
+
+      - name: Probe GitHub Packages auth
+        shell: bash
+        env:
+          PKG_OWNER: HnLAustralia
+          PKG_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN != '' && secrets.GH_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          auth=$(printf '%s:%s' "$PKG_OWNER" "$PKG_TOKEN" | base64)
+          curl -s -o /dev/null -w "HTTP %{http_code}\n" \
+            -H "Authorization: Basic ${auth}" \
+            "https://nuget.pkg.github.com/${PKG_OWNER}/index.json"
 
       # packages.config restore (puts NUnit.props etc. in ./packages)
       - name: NuGet restore (packages.config)
