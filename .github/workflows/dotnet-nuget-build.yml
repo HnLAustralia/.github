@@ -84,6 +84,7 @@ jobs:
       packages: write
     runs-on: windows-latest
     env:
+      NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # lets NuGet use the token automatically
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
     outputs:
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
