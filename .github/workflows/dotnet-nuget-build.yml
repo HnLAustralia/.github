@@ -73,7 +73,9 @@ on:
       HALDEVCERT_PFX_PASSWORD:
         description: Password for HalDevCert.pfx
         required: false
-
+      GH_PACKAGES_TOKEN:
+        description: PAT with read:packages (+ repo) for cross-repo NuGet restore
+        required: false
 jobs:
   build:
     permissions:
