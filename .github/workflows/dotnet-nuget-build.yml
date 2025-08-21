@@ -32,9 +32,6 @@ on:
       publish:
         type: boolean
         default: false
-      setup-nuget:
-        type: boolean
-        default: false
       use-nuget-restore:
         description: Run nuget restore for packages.config projects
         type: boolean
@@ -122,11 +119,14 @@ jobs:
             --store-password-in-clear-text
           dotnet nuget list source
 
-          
-      # Make sure NuGet CLI is available for packages.config restore
-      - name: Setup NuGet
-        if: ${{ inputs.setup-nuget }}
-        uses: NuGet/setup-nuget@v2
+      - name: Ensure PAT is present
+        shell: bash
+        env:
+          HAS_PAT: ${{ secrets.GH_PACKAGES_TOKEN }}
+        run: |
+          if [ -z "$HAS_PAT" ]; then
+            echo "::warning::GH_PACKAGES_TOKEN not passed; falling back to repo-scoped GITHUB_TOKEN (may 403 on cross-repo packages)."
+          fi
 
       - name: Probe GitHub Packages auth
         shell: bash
