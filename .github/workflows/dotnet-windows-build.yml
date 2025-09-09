@@ -119,7 +119,7 @@ on:
 jobs:
   build:
     permissions:
-      contents: read   # needed for pushing tags (auto_tags)
+      contents: write   # needed for pushing tags (auto_tags)
       packages: read
     runs-on: windows-latest
     env:
