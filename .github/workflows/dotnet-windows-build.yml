@@ -3,13 +3,13 @@ name: _dotnet-windows-build
 on:
   workflow_call:
     inputs:
-      # *** ENVIRONMENT ***
+      # *** ENV / TOOLING ***
       project-or-solution:
         description: Path to .sln/.csproj
         type: string
         required: true
       dotnet-version:
-        description: .NET SDK (e.g., 8.0.x)
+        description: .NET SDK (e.g., 7.0.x or 8.0.x)
         type: string
         default: '8.0.x'
       # Only when a repo has net461 targets or props that need it
@@ -17,24 +17,14 @@ on:
         description: Install .NET Framework 4.6.1 targeting pack
         type: boolean
         default: false
-        
-      # *** BUILD ***
       configuration:
+        description: Build configuration
         type: string
         default: 'Release'
       runtime:
-        description: Publish RID
+        description: Restore/Publish RID (e.g., win-x86, win-x64)
         type: string
         default: 'win-x86'
-      self-contained:
-        type: boolean
-        default: false
-      publish:
-        type: boolean
-        default: false
-      setup-nuget:
-        type: boolean
-        default: false
       use-nuget-restore:
         description: Run nuget restore for packages.config projects
         type: boolean
@@ -44,59 +34,107 @@ on:
         description: Use Visual Studio MSBuild instead of dotnet build
         type: boolean
         default: false    
+
+      # === VERSIONING ===
+      versioning-mode:
+        description: auto_tags | minver | none
+        type: string
+        default: 'auto_tags'
+
+      # MinVer (only if versioning-mode=minver)
+      minver-tag-prefix:
+        type: string
+        default: 'v'
+      minver-auto-increment:
+        type: string
+        default: 'patch'
+
+      # Auto-tags (only if versioning-mode=auto_tags)
+      develop-prefix:
+        description: Prefix for develop tags
+        type: string
+        default: 'develop-v'
+      release-prefix-template:
+        description: Prefix for release/* tags. Use {base} for branch base (e.g., 3.0.0)
+        type: string
+        default: 'release-{base}-v'
+      default-develop-version:
+        description: First develop version if no tags exist
+        type: string
+        default: '1.0.0.0'
+      default-release-revision:
+        description: Suffix for first release tag (e.g., '.0' -> 3.0.0.0)
+        type: string
+        default: '.0'
+      project-tag-suffix:
+        description: Optional per-project suffix added to tag prefix (e.g., '-WS' -> develop-v...-WS)
+        type: string
+        default: ''        
         
       # *** TEST ***
       test-project-or-solution:
-        description: Optional test project/solution
+        description: Optional test project/solution path filter
         type: string
         default: ''
-
-      # *** PUBLISH NUGET PACKAGE ***
-      pack:
-        type: boolean
-        default: false
-      nuspec-path:
-        description: Path to .nuspec (relative to repo root)
-        type: string
-        default: ''
-      sign-nuget:
-        description: Sign produced .nupkg via NuGet sign (requires PFX secrets)
-        type: boolean
-        default: false
-
-      # *** PUBLISH INSTALLER PACKAGE ***
-      upload:
+      run-tests:
         type: boolean
         default: false
         
+      # *** PUBLISH APP (dotnet publish) ***
+      publish:
+        type: boolean
+        default: false
+      publish-profile:
+        description: PublishProfile name (FolderProfile, etc.)
+        type: string
+        default: 'FolderProfile'
+      publish-output-dir:
+        description: Explicit publish output folder (optional)
+        type: string
+        default: ''
+
+      # === MSI (WiX) ===
+      wix-project:
+        description: Path to .wixproj
+        type: string
+        default: ''
+      wix-platform:
+        description: x86 | x64
+        type: string
+        default: 'x86'
+        
     outputs:
+      version:
+        description: Resolved version (may be empty if versioning-mode=none on non-matching branches)
+        value: ${{ jobs.build.outputs.version }}
       artifact_name:
         description: Name of published app artifact (if produced)
         value: ${{ jobs.build.outputs.artifact_name }}
 
     secrets:
-      HALDEVCERT_PFX_B64:
-        description: Base64-encoded HalDevCert.pfx for NuGet signing
-        required: false
-      HALDEVCERT_PFX_PASSWORD:
-        description: Password for HalDevCert.pfx
+      GH_PACKAGES_TOKEN:
+        description: Optional PAT for cross-repo GitHub Packages restore (fallback to GITHUB_TOKEN)
         required: false
 
 jobs:
   build:
     permissions:
-      contents: read
+      contents: read   # needed for pushing tags (auto_tags)
       packages: write
     runs-on: windows-latest
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     outputs:
+      version: ${{ steps.set-version.outputs.version }}
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
 
     steps:
       - uses: actions/checkout@v4
-      
-      # *** ENVIRONMENT ***
+        with:
+          fetch-depth: 0
+          
+      # *** ENV / TOOLING ***
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
@@ -109,162 +147,173 @@ jobs:
         shell: powershell
         run: choco install netfx-4.6.1-devpack -y
 
-      # Make sure NuGet CLI is available for packages.config restore
-      - name: Setup NuGet
-        if: ${{ inputs.setup-nuget }}
-        uses: NuGet/setup-nuget@v2
-
-      # packages.config restore (puts NUnit.props etc. in ./packages)
+      # Optional: NuGet restore for packages.config
       - name: NuGet restore (packages.config)
-        if: ${{ inputs.use-nuget-restore }}
+        if: ${{ inputs['use-nuget-restore'] }}
         run: nuget restore "${{ inputs['project-or-solution'] }}" -NonInteractive
 
-      # SDK-style restore (global cache)
+      # SDK restore with RID
       - name: Restore
-        run: dotnet restore "${{ inputs['project-or-solution'] }}"
+        run: dotnet restore "${{ inputs['project-or-solution'] }}" -r "${{ inputs.runtime }}"
+        
+      # ================= Versioning =================
+      - name: Compute Version (MinVer)
+        id: minver
+        if: ${{ inputs['versioning-mode'] == 'minver' }}
+        shell: pwsh
+        run: |
+          $prefix = '${{ inputs["minver-tag-prefix"] }}'
+          $autoInc = '${{ inputs["minver-auto-increment"] }}'
+          $props = @(
+            "/p:ContinuousIntegrationBuild=true",
+            "/p:MinVerTagPrefix=$prefix",
+            "/p:MinVerAutoIncrement=$autoInc"
+          )
+          $version = (dotnet msbuild '${{ inputs["project-or-solution"] }}' /nologo $props -getProperty:MinVerVersion).Trim()
+          if (-not $version) { throw "MinVerVersion not computed." }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      # *** BUILD ***
+      - name: Compute & Push Tag (Auto Tags)
+        id: autotags
+        if: ${{ inputs['versioning-mode'] == 'auto_tags' }}
+        shell: pwsh
+        env:
+          DEVELOP_PREFIX: ${{ inputs['develop-prefix'] }}
+          RELEASE_PREFIX_TEMPLATE: ${{ inputs['release-prefix-template'] }}
+          DEFAULT_DEV_VERSION: ${{ inputs['default-develop-version'] }}
+          DEFAULT_RELEASE_REV: ${{ inputs['default-release-revision'] }}
+          SUFFIX: ${{ inputs['project-tag-suffix'] }}
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "actions@github.com"
+          git fetch --tags
 
-      # Choose build engine
+          $branch = "${{ github.ref_name }}"
+          if ($branch -eq "develop") {
+            $tagPrefix = "$env:DEVELOP_PREFIX$env:SUFFIX"
+            $defaultVersion = $env:DEFAULT_DEV_VERSION
+          }
+          elseif ($branch -like "release/*") {
+            $base = $branch -replace '^release/', ''
+            $tagPrefix = ($env:RELEASE_PREFIX_TEMPLATE -replace '\{base\}', $base) + $env:SUFFIX
+            $defaultVersion = "$base$env:DEFAULT_RELEASE_REV"
+          }
+          else {
+            Write-Host "Non-develop, non-release branch. Skipping versioning."
+            "version=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+
+          $latestTag = git tag --list "$tagPrefix*" --sort=-v:refname | Select-Object -First 1
+          if ($latestTag) {
+            $numeric = $latestTag.Substring($tagPrefix.Length)
+            $ver = [version]$numeric
+            $next = "{0}.{1}.{2}.{3}" -f $ver.Major, $ver.Minor, $ver.Build, ($ver.Revision + 1)
+          } else {
+            $next = $defaultVersion
+          }
+
+          $newTag = "$tagPrefix$next"
+          Write-Host "Tagging: $newTag"
+          git tag $newTag
+          git push origin $newTag
+
+          "version=$next" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Select Version Output
+        id: set-version
+        shell: pwsh
+        run: |
+          $minver = '${{ steps.minver.outputs.version }}'
+          $auto   = '${{ steps.autotags.outputs.version }}'
+          $v = if ($minver) { $minver } elseif ($auto) { $auto } else { '' }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Resolved version: $v"
+
+      # ================= Build & Test =================
       - name: Build (MSBuild)
-        if: ${{ inputs.build-with-msbuild }}
+        if: ${{ inputs['build-with-msbuild'] }}
         shell: cmd
         run: |
           "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" ^
             "${{ inputs['project-or-solution'] }}" /m /p:Configuration=${{ inputs.configuration }} /v:m
+
       - name: Build
-        if: ${{ !inputs.build-with-msbuild }}
+        if: ${{ !inputs['build-with-msbuild'] }}
         run: dotnet build "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-restore
 
+      - name: Test
+        if: ${{ inputs['run-tests'] }}
+        run: |
+          if ("${{ inputs['test-project-or-solution'] }}") {
+            dotnet test "${{ inputs['test-project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-build --collect:"XPlat Code Coverage"
+          } else {
+            dotnet test "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-build --collect:"XPlat Code Coverage"
+          }
+
+      # ================= Publish (optional) =================
       - name: Publish
         if: ${{ inputs.publish }}
-        run: >
-          dotnet publish "${{ inputs['project-or-solution'] }}"
-          -c "${{ inputs.configuration }}"
-          -r "${{ inputs.runtime }}"
-          --self-contained ${{ inputs['self-contained'] }}
-          --no-build
-          -o out
-
-      - id: meta
-        if: ${{ inputs.publish }}
-        run: echo "artifact_name=app-${{ inputs['dotnet-version'] }}" >> $env:GITHUB_OUTPUT
-
-      # *** TEST ***
-
-      - name: Test
-        if: ${{ inputs['test-project-or-solution'] != '' }}
-        run: dotnet test "${{ inputs['test-project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-build --verbosity normal
-
-      # *** PUBLISH NUGET PACKAGE ***
-
-      - name: NuGet pack (.nuspec)
-        if: ${{ inputs.pack && inputs['nuspec-path'] != '' }}
         shell: pwsh
         run: |
+          $version = '${{ steps.set-version.outputs.version }}'
+          $out = '${{ inputs["publish-output-dir"] }}'
           $args = @(
-          "pack", "${{ inputs['nuspec-path'] }}",
-          "-OutputDirectory", "nupkg",
-          "-Properties", "Configuration=${{ inputs.configuration }}",
-          "-Symbols", "-SymbolPackageFormat", "snupkg"
+            'publish', '${{ inputs["project-or-solution"] }}',
+            '-c', '${{ inputs.configuration }}',
+            '-r', '${{ inputs.runtime }}',
+            '/p:PublishProfile=${{ inputs["publish-profile"] }}',
+            '--no-build'
           )
-          if ("${{ inputs['package-version'] }}") {
-          $args += @("-Version", "${{ inputs['package-version'] }}")
-          }
-          nuget @args
+          if ($version) { $args += "/p:Version=$version" }
+          if ($out) { $args += @('-o', $out) }
+          dotnet @args
 
-      # Validate signing secrets
-      - name: Validate signing secrets
-        if: ${{ inputs.sign-nuget }}
+      # ================= WiX (optional) =================
+      - name: Install WiX Toolset 3.x
+        if: ${{ inputs['wix-project'] != '' }}
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if ([string]::IsNullOrWhiteSpace("${{ secrets.HALDEVCERT_PFX_B64 }}") -or
-              [string]::IsNullOrWhiteSpace("${{ secrets.HALDEVCERT_PFX_PASSWORD }}")) {
-            throw "sign-nuget=true but HALDEVCERT_PFX_B64 / HALDEVCERT_PFX_PASSWORD not provided to the reusable workflow."
-          }
-      
-      # Write PFX from secret
-      - name: Write PFX from secret
-        if: ${{ inputs.sign-nuget }}
-        shell: pwsh
-        run: |
-          $bytes = [Convert]::FromBase64String("${{ secrets.HALDEVCERT_PFX_B64 }}")
-          [IO.File]::WriteAllBytes("HalDevCert.pfx", $bytes)
-          $len = (Get-Item "HalDevCert.pfx").Length
-          if ($len -lt 1024) { throw "HalDevCert.pfx looks too small ($len bytes). Check HALDEVCERT_PFX_B64." }
-          "HALDEVCERT_PWD=${{ secrets.HALDEVCERT_PFX_PASSWORD }}" | Out-File -FilePath $env:GITHUB_ENV -Append
+        run: choco install wixtoolset --no-progress -y
 
-      # Sign all .nupkg with RFC3161 timestamp (retry + fallback). Hard-fail if timestamping can't be obtained.
-      - name: NuGet sign (ALWAYS timestamp, with retries)
-        if: ${{ hashFiles('nupkg/**/*.nupkg') != '' && inputs.sign-nuget }}
-        shell: pwsh
+      - name: Build MSI (WiX)
+        if: ${{ inputs['wix-project'] != '' }}
         run: |
-          $ErrorActionPreference = 'Stop'
-      
-          # Write PFX and set password env (if you haven't already done so earlier)
-          if (-not (Test-Path HalDevCert.pfx)) {
-            [IO.File]::WriteAllBytes("HalDevCert.pfx",[Convert]::FromBase64String("${{ secrets.HALDEVCERT_PFX_B64 }}"))
-            $env:HALDEVCERT_PWD = "${{ secrets.HALDEVCERT_PFX_PASSWORD }}"
-          }
-      
-          # OPTIONAL: suppress NU3018 on the runner if you're using a self-signed cert
-          try {
-            $pwd  = ConvertTo-SecureString $env:HALDEVCERT_PWD -AsPlainText -Force
-            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2("HalDevCert.pfx",$pwd)
-            if ($cert.Issuer -eq $cert.Subject) {
-              [IO.File]::WriteAllBytes("HalDevCert.cer",$cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
-              certutil -addstore -f Root HalDevCert.cer | Out-Null
-            }
-          } catch { }
-      
-          # Timestamp servers to try (HTTP tends to be more reliable on runners)
-          $tsas = @(
-            'http://timestamp.digicert.com',
-            'http://timestamp.sectigo.com',
-            'http://rfc3161timestamp.globalsign.com/advanced'
-          )
-          $maxAttempts = 3
-      
-          foreach ($pkg in Get-ChildItem -Path nupkg -Filter *.nupkg) {
-            $signed = $false
-            foreach ($tsa in $tsas) {
-              for ($i=1; $i -le $maxAttempts; $i++) {
-                Write-Host "Signing $($pkg.Name) (attempt $i/$maxAttempts) via $tsa"
-                nuget sign $pkg.FullName `
-                  -CertificatePath HalDevCert.pfx `
-                  -CertificatePassword $env:HALDEVCERT_PWD `
-                  -Timestamper $tsa `
-                  -NonInteractive `
-                  -Overwrite
-                if ($LASTEXITCODE -eq 0) { $signed = $true; break }
-                Start-Sleep -Seconds ([int][Math]::Min(10, [Math]::Pow(2, $i))) # 2/4/8
-              }
-              if ($signed) { break }
-            }
-            if (-not $signed) {
-              throw "Timestamping failed for $($pkg.Name) after retries across all TSAs."
-            }
-          }
+          msbuild "${{ inputs['wix-project'] }}" `
+            /p:Configuration=${{ inputs.configuration }} `
+            /p:Platform=${{ inputs['wix-platform'] }} `
+            /p:BuildProjectReferences=false `
+            /t:Rebuild `
+            /v:m `
+            /nologo `
+            /p:ProductVersion=${{ steps.set-version.outputs.version }}
 
-      - name: Publish to GitHub Packages (NuGet)
+      # ================= Artifacts =================
+      - name: Artifact metadata
+        id: artifact-meta
         shell: pwsh
         run: |
-          $owner = "${{ github.repository_owner }}"
-          dotnet nuget add source `
-            --name "github" `
-            "https://nuget.pkg.github.com/$owner/index.json" `
-            --username "${{ github.actor }}" `
-            --password "${{ secrets.GITHUB_TOKEN }}" `
-            --store-password-in-clear-text
-      
-          Get-ChildItem -Path nupkg -Filter *.nupkg | ForEach-Object {
-            Write-Host "Pushing $($_.Name) to GitHub Packages…"
-            dotnet nuget push $_.FullName `
-              --source "github" `
-              --skip-duplicate
-            if ($LASTEXITCODE -ne 0) { throw "nuget push failed for $($_.Name)" }
-          }
+          $v = '${{ steps.set-version.outputs.version }}'
+          $name = if ($v) { "build-$v" } else { "build" }
+          "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Upload Publish Output (if any)
+        if: ${{ inputs.publish }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact-meta.outputs.name }}-publish
+          path: |
+            **/publish/**
+            **/bin/**/publish/**
+
+      - name: Upload MSI (if any)
+        if: ${{ inputs['wix-project'] != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact-meta.outputs.name }}-msi
+          path: |
+            **/*.msi
+            Installers/**/bin/**/**/*.msi
+
 
       # *** PUBLISH INSTALLER PACKAGE ***
 
