@@ -162,14 +162,14 @@ jobs:
         if: ${{ inputs['versioning-mode'] == 'minver' }}
         shell: pwsh
         run: |
-          $prefix = '${{ inputs["minver-tag-prefix"] }}'
-          $autoInc = '${{ inputs["minver-auto-increment"] }}'
+          $prefix = '${{ inputs['minver-tag-prefix'] }}'
+          $autoInc = '${{ inputs['minver-auto-increment'] }}'
           $props = @(
             "/p:ContinuousIntegrationBuild=true",
             "/p:MinVerTagPrefix=$prefix",
             "/p:MinVerAutoIncrement=$autoInc"
           )
-          $version = (dotnet msbuild '${{ inputs["project-or-solution"] }}' /nologo $props -getProperty:MinVerVersion).Trim()
+          $version = (dotnet msbuild '${{ inputs['project-or-solution'] }}' /nologo $props -getProperty:MinVerVersion).Trim()
           if (-not $version) { throw "MinVerVersion not computed." }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
