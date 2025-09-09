@@ -270,22 +270,15 @@ jobs:
           dotnet @args
 
       # ================= WiX (optional) =================
-      - name: Install WiX Toolset 3.x
-        if: ${{ inputs['wix-project'] != '' }}
-        shell: pwsh
-        run: choco install wixtoolset --no-progress -y
-
       - name: Build MSI (WiX)
         if: ${{ inputs['wix-project'] != '' }}
         run: |
           msbuild "${{ inputs['wix-project'] }}" `
             /p:Configuration=${{ inputs.configuration }} `
             /p:Platform=${{ inputs['wix-platform'] }} `
+            /p:ProductVersion=${{ steps.set_version.outputs.version }} `
             /p:BuildProjectReferences=false `
-            /t:Rebuild `
-            /v:m `
-            /nologo `
-            /p:ProductVersion=${{ steps.set-version.outputs.version }}
+            /t:Rebuild
 
       # ================= Artifacts =================
       - name: Artifact metadata
