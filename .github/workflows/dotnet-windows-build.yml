@@ -257,12 +257,12 @@ jobs:
         shell: pwsh
         run: |
           $version = '${{ steps.set-version.outputs.version }}'
-          $out = '${{ inputs["publish-output-dir"] }}'
+          $out = '${{ inputs['publish-output-dir'] }}'
           $args = @(
-            'publish', '${{ inputs["project-or-solution"] }}',
+            'publish', '${{ inputs['project-or-solution'] }}',
             '-c', '${{ inputs.configuration }}',
             '-r', '${{ inputs.runtime }}',
-            '/p:PublishProfile=${{ inputs["publish-profile"] }}',
+            '/p:PublishProfile=${{ inputs['publish-profile'] }}',
             '--no-build'
           )
           if ($version) { $args += "/p:Version=$version" }
