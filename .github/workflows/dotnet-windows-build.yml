@@ -161,17 +161,14 @@ jobs:
           $pkg = choco list --local-only wixtoolset --limit-output | ForEach-Object {
             ($_ -split '\|')[1]
           }
-
           if ($pkg -eq $desired) {
             Write-Host "WiX $desired already installed, skipping."
             exit 0
           }
-
           if ($pkg) {
             Write-Host "Different WiX version ($pkg) detected. Uninstalling..."
             choco uninstall wixtoolset -y --no-progress
           }
-
           Write-Host "Installing WiX $desired..."
           choco install wixtoolset --version $desired -y --no-progress
         
@@ -188,7 +185,7 @@ jobs:
 
       # SDK restore with RID
       - name: Restore
-        run: dotnet restore "${{ inputs['project-or-solution'] }}" -r "${{ inputs.runtime }}"
+        run: dotnet restore "${{ inputs['project-or-solution'] }}" -r "${{ inputs.runtime }}" /p:WixTargetsImported=true
         
       # ================= Versioning =================
       - name: Compute Version (MinVer)
@@ -196,12 +193,12 @@ jobs:
         if: ${{ inputs['versioning-mode'] == 'minver' }}
         shell: pwsh
         run: |
+          $msbuild = (Get-Command MSBuild.exe -ErrorAction Stop).Path
           $props = @(
             '/p:ContinuousIntegrationBuild=true',
             "/p:MinVerTagPrefix=${{ inputs['minver-tag-prefix'] }}",
             "/p:MinVerAutoIncrement=${{ inputs['minver-auto-increment'] }}"
           )
-          $msbuild = (Get-Command MSBuild.exe -ErrorAction Stop).Path
           $version = & $msbuild '${{ inputs['project-or-solution'] }}' /nologo $props -getProperty:MinVerVersion | Select-Object -Last 1
           if (-not $version) { throw "MinVerVersion not computed." }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
