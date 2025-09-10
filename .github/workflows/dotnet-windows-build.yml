@@ -102,6 +102,10 @@ on:
         description: x86 | x64
         type: string
         default: 'x86'
+      wix-version:
+        description: WiX Toolset 3.x version to install (e.g., 3.11.2)
+        type: string
+        default: '3.11.2'
         
     outputs:
       version:
@@ -127,7 +131,7 @@ jobs:
       NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     outputs:
       version: ${{ steps.set-version.outputs.version }}
-      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+      artifact_name: ${{ steps.meta-outputs.artifact_name }}
 
     steps:
       - uses: actions/checkout@v4
@@ -144,6 +148,11 @@ jobs:
         with:
           dotnet-version: ${{ inputs['dotnet-version'] }}
 
+      - name: Install WiX Toolset (3.x)
+        if: ${{ inputs['wix-project'] != '' && inputs['wix-version'] != '' }}
+        shell: powershell
+        run: choco install wixtoolset --version ${{ inputs['wix-version'] }} -y
+        
       # Install .NET Framework 4.6.1 targeting pack if requested
       - name: Install .NET Framework 4.6.1 targeting pack
         if: ${{ inputs.install-framework-461 }}
@@ -279,9 +288,9 @@ jobs:
           msbuild "${{ inputs['wix-project'] }}" `
             /p:Configuration=${{ inputs.configuration }} `
             /p:Platform=${{ inputs['wix-platform'] }} `
-            /p:ProductVersion=${{ steps.set_version.outputs.version }} `
+            /p:ProductVersion=${{ steps.set-version.outputs.version }} `
             /p:BuildProjectReferences=false `
-            /t:Rebuild
+            /t:Rebuild /v:m
 
       # ================= Artifacts =================
       - name: Artifact metadata
