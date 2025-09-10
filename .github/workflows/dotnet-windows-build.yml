@@ -148,10 +148,27 @@ jobs:
         with:
           dotnet-version: ${{ inputs['dotnet-version'] }}
 
-      - name: Install WiX Toolset (3.x)
+      - name: Ensure WiX Toolset version
         if: ${{ inputs['wix-project'] != '' && inputs['wix-version'] != '' }}
-        shell: powershell
-        run: choco install wixtoolset --version ${{ inputs['wix-version'] }} -y
+        shell: pwsh
+        run: |
+          $desired = "${{ inputs['wix-version'] }}"
+          $pkg = choco list --local-only wixtoolset --limit-output | ForEach-Object {
+            ($_ -split '\|')[1]
+          }
+
+          if ($pkg -eq $desired) {
+            Write-Host "WiX $desired already installed, skipping."
+            exit 0
+          }
+
+          if ($pkg) {
+            Write-Host "Different WiX version ($pkg) detected. Uninstalling..."
+            choco uninstall wixtoolset -y --no-progress
+          }
+
+          Write-Host "Installing WiX $desired..."
+          choco install wixtoolset --version $desired -y --no-progress
         
       # Install .NET Framework 4.6.1 targeting pack if requested
       - name: Install .NET Framework 4.6.1 targeting pack
