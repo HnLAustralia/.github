@@ -106,6 +106,11 @@ on:
         description: WiX Toolset 3.x version to install (e.g., 3.11.2)
         type: string
         default: '3.11.2'
+
+      upload:
+        description: Upload final artifact produced under 'out'
+        type: boolean
+        default: false
         
     outputs:
       version:
@@ -131,7 +136,7 @@ jobs:
       NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     outputs:
       version: ${{ steps.set-version.outputs.version }}
-      artifact_name: ${{ steps.meta-outputs.artifact_name }}
+      artifact_name: ${{ steps.artifact-meta.outputs.name }}
 
     steps:
       - uses: actions/checkout@v4
@@ -191,14 +196,13 @@ jobs:
         if: ${{ inputs['versioning-mode'] == 'minver' }}
         shell: pwsh
         run: |
-          $prefix = '${{ inputs['minver-tag-prefix'] }}'
-          $autoInc = '${{ inputs['minver-auto-increment'] }}'
           $props = @(
-            "/p:ContinuousIntegrationBuild=true",
-            "/p:MinVerTagPrefix=$prefix",
-            "/p:MinVerAutoIncrement=$autoInc"
+            '/p:ContinuousIntegrationBuild=true',
+            "/p:MinVerTagPrefix=${{ inputs['minver-tag-prefix'] }}",
+            "/p:MinVerAutoIncrement=${{ inputs['minver-auto-increment'] }}"
           )
-          $version = (dotnet msbuild '${{ inputs['project-or-solution'] }}' /nologo $props -getProperty:MinVerVersion).Trim()
+          $msbuild = (Get-Command MSBuild.exe -ErrorAction Stop).Path
+          $version = & $msbuild '${{ inputs['project-or-solution'] }}' /nologo $props -getProperty:MinVerVersion | Select-Object -Last 1
           if (-not $version) { throw "MinVerVersion not computed." }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
@@ -264,8 +268,10 @@ jobs:
         if: ${{ inputs['build-with-msbuild'] }}
         shell: cmd
         run: |
-          "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" ^
-            "${{ inputs['project-or-solution'] }}" /m /p:Configuration=${{ inputs.configuration }} /v:m
+          MSBuild.exe ^
+            "${{ inputs['project-or-solution'] }}" /m ^
+            /p:Configuration=${{ inputs.configuration }} ^
+            /p:Platform=${{ inputs['wix-platform'] }} /v:m
 
       - name: Build
         if: ${{ !inputs['build-with-msbuild'] }}
@@ -301,12 +307,14 @@ jobs:
       # ================= WiX (optional) =================
       - name: Build MSI (WiX)
         if: ${{ inputs['wix-project'] != '' }}
+        shell: cmd
         run: |
-          MSBuild "${{ inputs['wix-project'] }}" `
-            /p:Configuration=${{ inputs.configuration }} `
-            /p:Platform=${{ inputs['wix-platform'] }} `
-            /p:ProductVersion=${{ steps.set-version.outputs.version }} `
-            /p:BuildProjectReferences=false `
+          MSBuild.exe ^
+            "${{ inputs['wix-project'] }}" ^
+            /p:Configuration=${{ inputs.configuration }} ^
+            /p:Platform=${{ inputs['wix-platform'] }} ^
+            /p:ProductVersion=${{ steps.set-version.outputs.version }} ^
+            /p:BuildProjectReferences=false ^
             /t:Rebuild /v:m
 
       # ================= Artifacts =================
@@ -335,13 +343,3 @@ jobs:
           path: |
             **/*.msi
             Installers/**/bin/**/**/*.msi
-
-
-      # *** PUBLISH INSTALLER PACKAGE ***
-
-      - name: Upload artifact
-        if: ${{ inputs.upload }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.meta.outputs.artifact_name }}
-          path: out
