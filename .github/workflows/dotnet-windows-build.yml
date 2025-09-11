@@ -262,7 +262,7 @@ jobs:
 
       # ================= Build & Test =================
       - name: Build (MSBuild)
-        if: ${{ inputs['build-with-msbuild'] }}
+        if: ${{ inputs['build-with-msbuild'] || inputs['wix-project'] != '' }}
         shell: cmd
         run: |
           MSBuild.exe ^
@@ -271,16 +271,16 @@ jobs:
             /p:Platform=${{ inputs['wix-platform'] }} /v:m
 
       - name: Build
-        if: ${{ !inputs['build-with-msbuild'] }}
+        if: ${{ !inputs['build-with-msbuild'] || inputs['wix-project'] != '' }}
         run: dotnet build "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-restore
 
       - name: Test
         if: ${{ inputs['run-tests'] }}
         run: |
           if ("${{ inputs['test-project-or-solution'] }}") {
-            dotnet test "${{ inputs['test-project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-build --collect:"XPlat Code Coverage"
+            dotnet test "${{ inputs['test-project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-build --collect:"XPlat Code Coverage" /p:WixTargetsImported=true
           } else {
-            dotnet test "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-build --collect:"XPlat Code Coverage"
+            dotnet test "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-build --collect:"XPlat Code Coverage" /p:WixTargetsImported=true
           }
 
       # ================= Publish (optional) =================
@@ -299,7 +299,7 @@ jobs:
           )
           if ($version) { $args += "/p:Version=$version" }
           if ($out) { $args += @('-o', $out) }
-          dotnet @args
+          dotnet @args /p:WixTargetsImported=true
 
       # ================= WiX (optional) =================
       - name: Resolve WiX paths
