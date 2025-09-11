@@ -302,6 +302,42 @@ jobs:
           dotnet @args
 
       # ================= WiX (optional) =================
+      - name: Resolve WiX paths
+        id: wixpaths
+        if: ${{ inputs['wix-project'] != '' }}
+        shell: pwsh
+        run: |
+          $ver = "${{ inputs['wix-version'] }}"
+      
+          # Fixed: no string interpolation; use Join-Path with $env:ProgramFiles(x86)
+          $wixTargets = Join-Path (Join-Path $env:ProgramFiles(x86) 'MSBuild\Microsoft\WiX\v3.x') 'Wix.targets'
+          if (!(Test-Path $wixTargets)) { throw "WiX MSBuild targets not found at $wixTargets" }
+      
+          $pickByShort = $null
+          if ($ver -and $ver.Trim()) {
+            try {
+              $v = [version]$ver
+              $pickByShort = "$($v.Major).$($v.Minor)"   # e.g., 3.11 or 3.14
+            } catch { }
+          }
+      
+          $all = Get-ChildItem $env:ProgramFiles(x86) -Directory |
+                 Where-Object { $_.Name -like 'WiX Toolset v3.*' } |
+                 Sort-Object Name -Descending
+      
+          $candidate = if ($pickByShort) {
+            $all | Where-Object { $_.Name -eq "WiX Toolset v$pickByShort" } | Select-Object -First 1
+          } else { $null }
+      
+          if (-not $candidate) { $candidate = $all | Select-Object -First 1 }
+          if (-not $candidate) { throw "No WiX Toolset v3.x installation found under $($env:ProgramFiles(x86))" }
+      
+          $wixBin = Join-Path $candidate.FullName 'bin'
+          if (!(Test-Path $wixBin)) { throw "WiX bin not found at $wixBin" }
+      
+          "WIX_TARGETS=$wixTargets" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "WIX_BIN=$wixBin"         | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
       - name: Build MSI (WiX)
         if: ${{ inputs['wix-project'] != '' }}
         shell: cmd
@@ -312,7 +348,11 @@ jobs:
             /p:Platform=${{ inputs['wix-platform'] }} ^
             /p:ProductVersion=${{ steps.set-version.outputs.version }} ^
             /p:BuildProjectReferences=false ^
+            /p:WixTargetsPath="${{ steps.wixpaths.outputs.WIX_TARGETS }}" ^
+            /p:WixToolPath="${{ steps.wixpaths.outputs.WIX_BIN }}\" ^
+            /p:WixTasksPath="${{ steps.wixpaths.outputs.WIX_BIN }}\WixTasks.dll" ^
             /t:Rebuild /v:m
+
 
       # ================= Artifacts =================
       - name: Artifact metadata
@@ -328,6 +368,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.artifact-meta.outputs.name }}-publish
+          if-no-files-found: ignore
           path: |
             **/publish/**
             **/bin/**/publish/**
@@ -337,6 +378,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.artifact-meta.outputs.name }}-msi
+          if-no-files-found: ignore
           path: |
             **/*.msi
             Installers/**/bin/**/**/*.msi
