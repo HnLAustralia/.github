@@ -262,7 +262,7 @@ jobs:
 
       # ================= Build & Test =================
       - name: Build (MSBuild)
-        if: ${{ inputs['build-with-msbuild'] || inputs['wix-project'] != '' }}
+        if: ${{ inputs['build-with-msbuild'] || inputs['wix-project'] == '' }}
         shell: cmd
         run: |
           MSBuild.exe ^
@@ -310,7 +310,7 @@ jobs:
           $ver = "${{ inputs['wix-version'] }}"
       
           # Fixed: no string interpolation; use Join-Path with $env:ProgramFiles(x86)
-          $wixTargets = Join-Path (Join-Path $env:ProgramFiles(x86) 'MSBuild\Microsoft\WiX\v3.x') 'Wix.targets'
+          $wixTargets = Join-Path (Join-Path ${env:ProgramFiles(x86)} 'MSBuild\Microsoft\WiX\v3.x') 'Wix.targets'
           if (!(Test-Path $wixTargets)) { throw "WiX MSBuild targets not found at $wixTargets" }
       
           $pickByShort = $null
@@ -321,7 +321,7 @@ jobs:
             } catch { }
           }
       
-          $all = Get-ChildItem $env:ProgramFiles(x86) -Directory |
+          $all = Get-ChildItem ${env:ProgramFiles(x86)} -Directory |
                  Where-Object { $_.Name -like 'WiX Toolset v3.*' } |
                  Sort-Object Name -Descending
       
@@ -351,8 +351,8 @@ jobs:
             /p:WixTargetsPath="${{ steps.wixpaths.outputs.WIX_TARGETS }}" ^
             /p:WixToolPath="${{ steps.wixpaths.outputs.WIX_BIN }}\" ^
             /p:WixTasksPath="${{ steps.wixpaths.outputs.WIX_BIN }}\WixTasks.dll" ^
+            /nr:false ^
             /t:Rebuild /v:m
-
 
       # ================= Artifacts =================
       - name: Artifact metadata
