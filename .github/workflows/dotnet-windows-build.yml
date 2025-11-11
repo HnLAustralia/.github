@@ -192,7 +192,7 @@ jobs:
           <packageSourceCredentials>
             <github>
               <add key="Username" value="${{ github.repository_owner }}" />
-              <add key="ClearTextPassword" value="$env:GH_PACKAGES_TOKEN" />
+              <add key="ClearTextPassword" value="$env:NUGET_AUTH_TOKEN" />
             </github>
           </packageSourceCredentials>
           </configuration>
