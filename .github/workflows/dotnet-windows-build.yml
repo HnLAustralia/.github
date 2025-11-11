@@ -178,6 +178,20 @@ jobs:
         shell: powershell
         run: choco install netfx-4.6.1-devpack -y
 
+      - name: Setup GitHub Packages source
+        shell: pwsh
+        run: |
+          $configContent = @"
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <packageSources>
+              <add key="github" value="https://nuget.pkg.github.com/HnLAustralia/index.json" />
+              <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+            </packageSources>
+          </configuration>
+          "@
+          Set-Content -Path "NuGet.config" -Value $configContent
+
       # Optional: NuGet restore for packages.config
       - name: NuGet restore (packages.config)
         if: ${{ inputs['use-nuget-restore'] }}
