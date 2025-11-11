@@ -133,7 +133,7 @@ jobs:
     runs-on: windows-latest
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
-      NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      NUGET_AUTH_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
     outputs:
       version: ${{ steps.set-version.outputs.version }}
       artifact_name: ${{ steps.artifact-meta.outputs.name }}
