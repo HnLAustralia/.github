@@ -331,7 +331,8 @@ jobs:
           $ver = "${{ inputs['wix-version'] }}"
       
           # Fixed: no string interpolation; use Join-Path with $env:ProgramFiles(x86)
-          $wixTargets = Join-Path (Join-Path ${env:ProgramFiles(x86)} 'MSBuild\Microsoft\WiX\v3.x') 'Wix.targets'
+          $programFilesX86 = ${env:ProgramFiles(x86)}
+          $wixTargets = Join-Path (Join-Path $programFilesX86 'MSBuild\Microsoft\WiX\v3.x') 'Wix.targets'
           if (!(Test-Path $wixTargets)) { throw "WiX MSBuild targets not found at $wixTargets" }
       
           $pickByShort = $null
@@ -351,7 +352,7 @@ jobs:
           } else { $null }
       
           if (-not $candidate) { $candidate = $all | Select-Object -First 1 }
-          if (-not $candidate) { throw "No WiX Toolset v3.x installation found under $($env:ProgramFiles(x86))" }
+          if (-not $candidate) { throw "No WiX Toolset v3.x installation found under $programFilesX86" }
       
           $wixBin = Join-Path $candidate.FullName 'bin'
           if (!(Test-Path $wixBin)) { throw "WiX bin not found at $wixBin" }
