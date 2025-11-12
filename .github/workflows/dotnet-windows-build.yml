@@ -370,9 +370,9 @@ jobs:
             /p:Platform=${{ inputs['wix-platform'] }} ^
             /p:ProductVersion=${{ steps.set-version.outputs.version }} ^
             /p:BuildProjectReferences=false ^
-            /p:WixTargetsPath=${{ steps.wixpaths.outputs.WIX_TARGETS }} ^
-            /p:WixToolPath=${{ steps.wixpaths.outputs.WIX_BIN }}\ ^
-            /p:WixTasksPath=${{ steps.wixpaths.outputs.WIX_BIN }}\WixTasks.dll ^
+            /p:WixTargetsPath="%ProgramFiles(x86)%\MSBuild\Microsoft\WiX\v3.x\Wix.targets" ^
+            /p:WixToolPath="%ProgramFiles(x86)%\WiX Toolset v3.11\bin\\" ^
+            /p:WixTasksPath="%ProgramFiles(x86)%\WiX Toolset v3.11\bin\\WixTasks.dll" ^
             /nr:false ^
             /t:Rebuild /v:m
 
