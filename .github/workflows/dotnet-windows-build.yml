@@ -81,17 +81,10 @@ on:
         default: false
         
       # *** PUBLISH APP (dotnet publish) ***
-      publish:
-        type: boolean
-        default: false
       publish-profile:
         description: PublishProfile name (FolderProfile, etc.)
         type: string
         default: 'FolderProfile'
-      publish-output-dir:
-        description: Explicit publish output folder (optional)
-        type: string
-        default: ''
 
       # === MSI (WiX) ===
       wix-project:
@@ -306,20 +299,18 @@ jobs:
 
       # ================= Publish (optional) =================
       - name: Publish
-        if: ${{ inputs.publish }}
+        if: ${{ inputs['publish-profile'] != '' }}
         shell: pwsh
         run: |
           $version = '${{ steps.set-version.outputs.version }}'
-          $out = '${{ inputs['publish-output-dir'] }}'
+          $profile = '${{ inputs['publish-profile'] }}'
           $args = @(
             'publish', '${{ inputs['project-or-solution'] }}',
             '-c', '${{ inputs.configuration }}',
-            '-r', '${{ inputs.runtime }}',
-            '/p:PublishProfile=${{ inputs['publish-profile'] }}',
             '--no-build'
+            "/p:PublishProfile=$profile",
           )
           if ($version) { $args += "/p:Version=$version" }
-          if ($out) { $args += @('-o', $out) }
           dotnet @args /p:WixTargetsImported=true
 
       # ================= WiX (optional) =================
@@ -386,7 +377,7 @@ jobs:
           "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Upload Publish Output (if any)
-        if: ${{ inputs.publish }}
+        if: ${{ inputs['publish-profile'] != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.artifact-meta.outputs.name }}-publish
