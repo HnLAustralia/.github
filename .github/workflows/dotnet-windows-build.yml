@@ -285,7 +285,7 @@ jobs:
             /p:Platform=${{ inputs['wix-platform'] }} /v:m
 
       - name: Build
-        if: ${{ !inputs['build-with-msbuild'] || inputs['wix-project'] != '' }}
+        if: ${{ !inputs['build-with-msbuild'] || inputs['wix-project'] != '' && inputs['publish-profile'] == '' }}
         run: dotnet build "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" -r "${{ inputs.runtime }}" --no-restore
 
       - name: Test
@@ -307,7 +307,6 @@ jobs:
           $args = @(
             'publish', '${{ inputs['project-or-solution'] }}',
             '-c', '${{ inputs.configuration }}',
-            '--no-build',
             "/p:PublishProfile=$profile"
           )
           if ($version) { $args += "/p:Version=$version" }
