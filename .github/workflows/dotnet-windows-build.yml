@@ -286,7 +286,7 @@ jobs:
 
       - name: Build
         if: ${{ !inputs['build-with-msbuild'] || inputs['wix-project'] != '' }}
-        run: dotnet build "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-restore
+        run: dotnet build "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" -r "${{ inputs.runtime }}" --no-restore
 
       - name: Test
         if: ${{ inputs['run-tests'] }}
