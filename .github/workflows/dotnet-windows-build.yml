@@ -307,8 +307,8 @@ jobs:
           $args = @(
             'publish', '${{ inputs['project-or-solution'] }}',
             '-c', '${{ inputs.configuration }}',
-            '--no-build'
-            "/p:PublishProfile=$profile",
+            '--no-build',
+            "/p:PublishProfile=$profile"
           )
           if ($version) { $args += "/p:Version=$version" }
           dotnet @args /p:WixTargetsImported=true
