@@ -37,17 +37,9 @@ on:
 
       # === VERSIONING ===
       versioning-mode:
-        description: auto_tags | minver | none
+        description: auto_tags | none
         type: string
         default: 'auto_tags'
-
-      # MinVer (only if versioning-mode=minver)
-      minver-tag-prefix:
-        type: string
-        default: 'v'
-      minver-auto-increment:
-        type: string
-        default: 'patch'
 
       # Auto-tags (only if versioning-mode=auto_tags)
       develop-prefix:
@@ -100,11 +92,6 @@ on:
         type: string
         default: '3.11.2'
 
-      upload:
-        description: Upload final artifact produced under 'out'
-        type: boolean
-        default: false
-        
     outputs:
       version:
         description: Resolved version (may be empty if versioning-mode=none on non-matching branches)
@@ -202,21 +189,6 @@ jobs:
         run: dotnet restore "${{ inputs['project-or-solution'] }}" -r "${{ inputs.runtime }}" /p:WixTargetsImported=true
         
       # ================= Versioning =================
-      - name: Compute Version (MinVer)
-        id: minver
-        if: ${{ inputs['versioning-mode'] == 'minver' }}
-        shell: pwsh
-        run: |
-          $msbuild = (Get-Command MSBuild.exe -ErrorAction Stop).Path
-          $props = @(
-            '/p:ContinuousIntegrationBuild=true',
-            "/p:MinVerTagPrefix=${{ inputs['minver-tag-prefix'] }}",
-            "/p:MinVerAutoIncrement=${{ inputs['minver-auto-increment'] }}"
-          )
-          $version = & $msbuild '${{ inputs['project-or-solution'] }}' /nologo $props -getProperty:MinVerVersion | Select-Object -Last 1
-          if (-not $version) { throw "MinVerVersion not computed." }
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
       - name: Compute & Push Tag (Auto Tags)
         id: autotags
         if: ${{ inputs['versioning-mode'] == 'auto_tags' }}
@@ -298,9 +270,8 @@ jobs:
         id: set-version
         shell: pwsh
         run: |
-          $minver = '${{ steps.minver.outputs.version }}'
           $auto   = '${{ steps.autotags.outputs.version }}'
-          $v = if ($minver) { $minver } elseif ($auto) { $auto } else { '' }
+          $v = if ($auto) { $auto } else { '' }
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Resolved version: $v"
 
@@ -348,37 +319,17 @@ jobs:
         if: ${{ inputs['wix-project'] != '' }}
         shell: pwsh
         run: |
-          $ver = "${{ inputs['wix-version'] }}"
-      
-          # Fixed: no string interpolation; use Join-Path with $env:ProgramFiles(x86)
-          $programFilesX86 = ${env:ProgramFiles(x86)}
-          $wixTargets = Join-Path (Join-Path $programFilesX86 'MSBuild\Microsoft\WiX\v3.x') 'Wix.targets'
-          if (!(Test-Path $wixTargets)) { throw "WiX MSBuild targets not found at $wixTargets" }
-      
-          $pickByShort = $null
-          if ($ver -and $ver.Trim()) {
-            try {
-              $v = [version]$ver
-              $pickByShort = "$($v.Major).$($v.Minor)"   # e.g., 3.11 or 3.14
-            } catch { }
+          $msbuild = (Get-Command MSBuild.exe -ErrorAction Stop).Path
+          $wixProj = "${{ inputs['wix-project'] }}"
+          $wixTargetsPath = & $msbuild $wixProj /nologo -getProperty:WixTargetsPath | Select-Object -Last 1
+
+          if (-not $wixTargetsPath -or -not $wixTargetsPath.Trim()) {
+            throw "WixTargetsPath property is empty. Check your .wixproj configuration."
           }
-      
-          $all = Get-ChildItem ${env:ProgramFiles(x86)} -Directory |
-                 Where-Object { $_.Name -like 'WiX Toolset v3.*' } |
-                 Sort-Object Name -Descending
-      
-          $candidate = if ($pickByShort) {
-            $all | Where-Object { $_.Name -eq "WiX Toolset v$pickByShort" } | Select-Object -First 1
-          } else { $null }
-      
-          if (-not $candidate) { $candidate = $all | Select-Object -First 1 }
-          if (-not $candidate) { throw "No WiX Toolset v3.x installation found under $programFilesX86" }
-      
-          $wixBin = Join-Path $candidate.FullName 'bin'
-          if (!(Test-Path $wixBin)) { throw "WiX bin not found at $wixBin" }
-      
-          "WIX_TARGETS=$wixTargets" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "WIX_BIN=$wixBin"         | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          if (!(Test-Path $wixTargetsPath)) {
+            throw "WiX targets not found at '$wixTargetsPath' (from WixTargetsPath in $wixProj)."
+          }
 
       - name: Build MSI (WiX)
         if: ${{ inputs['wix-project'] != '' }}
@@ -390,9 +341,6 @@ jobs:
             /p:Platform=${{ inputs['wix-platform'] }} ^
             /p:ProductVersion=${{ steps.set-version.outputs.version }} ^
             /p:BuildProjectReferences=false ^
-            /p:WixTargetsPath="%ProgramFiles(x86)%\MSBuild\Microsoft\WiX\v3.x\Wix.targets" ^
-            /p:WixToolPath="%ProgramFiles(x86)%\WiX Toolset v3.11\bin\\" ^
-            /p:WixTasksPath="%ProgramFiles(x86)%\WiX Toolset v3.11\bin\\WixTasks.dll" ^
             /nr:false ^
             /t:Rebuild /v:m
 
