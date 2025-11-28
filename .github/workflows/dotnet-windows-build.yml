@@ -233,28 +233,58 @@ jobs:
           git fetch --tags
 
           $branch = "${{ github.ref_name }}"
+          $tagPrefix = $null
+          $next = $null
+
           if ($branch -eq "develop") {
+            # Example: DEVELOP_PREFIX='develop-v', DEFAULT_DEV_VERSION='9.1.0.0'
             $tagPrefix = "$env:DEVELOP_PREFIX$env:SUFFIX"
-            $defaultVersion = $env:DEFAULT_DEV_VERSION
+            $desiredBase = [version]$env:DEFAULT_DEV_VERSION
+
+            # Find latest tag in the same Major.Minor.Build series as DEFAULT_DEV_VERSION
+            $latestCandidate = git tag --list "$tagPrefix*" |
+              ForEach-Object {
+                $name = $_
+                $numeric = $name.Substring($tagPrefix.Length)
+                try { $v = [version]$numeric } catch { return }
+                if ($v.Major -eq $desiredBase.Major -and
+                    $v.Minor -eq $desiredBase.Minor -and
+                    $v.Build -eq $desiredBase.Build) {
+                  [PSCustomObject]@{ Tag = $name; Version = $v }
+                }
+              } |
+              Sort-Object { $_.Version } -Descending |
+              Select-Object -First 1
+
+            if ($latestCandidate) {
+              $ver = $latestCandidate.Version
+              $next = "{0}.{1}.{2}.{3}" -f $ver.Major, $ver.Minor, $ver.Build, ($ver.Revision + 1)
+            }
+            else {
+              # First build in this series (e.g. 9.1.0.0, then later 9.2.0.0, etc.)
+              $next = $env:DEFAULT_DEV_VERSION
+            }
           }
           elseif ($branch -like "release/*") {
+            # Example branch: release/9.1.0  -> base='9.1.0'
             $base = $branch -replace '^release/', ''
             $tagPrefix = ($env:RELEASE_PREFIX_TEMPLATE -replace '\{base\}', $base) + $env:SUFFIX
             $defaultVersion = "$base$env:DEFAULT_RELEASE_REV"
+
+            $latestTag = git tag --list "$tagPrefix*" --sort=-v:refname | Select-Object -First 1
+            if ($latestTag) {
+              $numeric = $latestTag.Substring($tagPrefix.Length)
+              $ver = [version]$numeric
+              $next = "{0}.{1}.{2}.{3}" -f $ver.Major, $ver.Minor, $ver.Build, ($ver.Revision + 1)
+            }
+            else {
+              $next = $defaultVersion
+            }
           }
           else {
             Write-Host "Non-develop, non-release branch. Skipping versioning."
             "version=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             exit 0
-          }
-
-          $latestTag = git tag --list "$tagPrefix*" --sort=-v:refname | Select-Object -First 1
-          if ($latestTag) {
-            $numeric = $latestTag.Substring($tagPrefix.Length)
-            $ver = [version]$numeric
-            $next = "{0}.{1}.{2}.{3}" -f $ver.Major, $ver.Minor, $ver.Build, ($ver.Revision + 1)
-          } else {
-            $next = $defaultVersion
           }
 
           $newTag = "$tagPrefix$next"
