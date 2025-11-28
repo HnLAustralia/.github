@@ -319,6 +319,7 @@ jobs:
         if: ${{ inputs['wix-project'] != '' }}
         shell: pwsh
         run: |
+          # Verify what the .wixproj thinks WixTargetsPath is
           $msbuild = (Get-Command MSBuild.exe -ErrorAction Stop).Path
           $wixProj = "${{ inputs['wix-project'] }}"
           $wixTargetsPath = & $msbuild $wixProj /nologo -getProperty:WixTargetsPath | Select-Object -Last 1
@@ -331,6 +332,34 @@ jobs:
             throw "WiX targets not found at '$wixTargetsPath' (from WixTargetsPath in $wixProj)."
           }
 
+          # Find WiX Toolset bin folder (where WixTasks.dll actually lives)
+          $ver = "${{ inputs['wix-version'] }}"
+          $programFilesX86 = ${env:ProgramFiles(x86)}
+
+          $all = Get-ChildItem $programFilesX86 -Directory |
+                Where-Object { $_.Name -like 'WiX Toolset v3.*' } |
+                Sort-Object Name -Descending
+
+          $candidate = $null
+          if ($ver -and $ver.Trim()) {
+            try {
+              $v = [version]$ver
+              $short = "$($v.Major).$($v.Minor)"   # e.g. 3.11
+              $candidate = $all | Where-Object { $_.Name -eq "WiX Toolset v$short" } | Select-Object -First 1
+            } catch { }
+          }
+
+          if (-not $candidate) { $candidate = $all | Select-Object -First 1 }
+          if (-not $candidate) { throw "No WiX Toolset v3.x installation found under $programFilesX86" }
+
+          $wixBin = Join-Path $candidate.FullName 'bin'
+          $wixTasks = Join-Path $wixBin 'WixTasks.dll'
+          if (!(Test-Path $wixTasks)) {
+            throw "WiX tasks not found at '$wixTasks'. Check WiX installation."
+          }
+
+          "WIX_BIN=$wixBin" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
       - name: Build MSI (WiX)
         if: ${{ inputs['wix-project'] != '' }}
         shell: cmd
@@ -341,6 +370,8 @@ jobs:
             /p:Platform=${{ inputs['wix-platform'] }} ^
             /p:ProductVersion=${{ steps.set-version.outputs.version }} ^
             /p:BuildProjectReferences=false ^
+            /p:WixToolPath="${{ steps.wixpaths.outputs.WIX_BIN }}\\" ^
+            /p:WixTasksPath="${{ steps.wixpaths.outputs.WIX_BIN }}\\WixTasks.dll" ^
             /nr:false ^
             /t:Rebuild /v:m
 
