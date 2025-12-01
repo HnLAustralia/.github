@@ -205,53 +205,26 @@ jobs:
           git fetch --tags
 
           $branch = "${{ github.ref_name }}"
-          $tagPrefix = $null
+
           $next = $null
+          $tagPrefixForNewTag = $null
+          $baseText = $null
+          $baseVersion = $null
+
+          # --- Determine target base and what prefix to use for the *new* tag ---
 
           if ($branch -eq "develop") {
-            # Example: DEVELOP_PREFIX='develop-v', DEFAULT_DEV_VERSION='9.1.0.0'
-            $tagPrefix = "$env:DEVELOP_PREFIX$env:SUFFIX"
-            $desiredBase = [version]$env:DEFAULT_DEV_VERSION
-
-            # Find latest tag in the same Major.Minor.Build series as DEFAULT_DEV_VERSION
-            $latestCandidate = git tag --list "$tagPrefix*" |
-              ForEach-Object {
-                $name = $_
-                $numeric = $name.Substring($tagPrefix.Length)
-                try { $v = [version]$numeric } catch { return }
-                if ($v.Major -eq $desiredBase.Major -and
-                    $v.Minor -eq $desiredBase.Minor -and
-                    $v.Build -eq $desiredBase.Build) {
-                  [PSCustomObject]@{ Tag = $name; Version = $v }
-                }
-              } |
-              Sort-Object { $_.Version } -Descending |
-              Select-Object -First 1
-
-            if ($latestCandidate) {
-              $ver = $latestCandidate.Version
-              $next = "{0}.{1}.{2}.{3}" -f $ver.Major, $ver.Minor, $ver.Build, ($ver.Revision + 1)
-            }
-            else {
-              # First build in this series (e.g. 9.1.0.0, then later 9.2.0.0, etc.)
-              $next = $env:DEFAULT_DEV_VERSION
-            }
+            # Example: DEFAULT_DEV_VERSION='9.1.0.0'
+            $baseVersion = [version]$env:DEFAULT_DEV_VERSION
+            $baseText = "{0}.{1}.{2}" -f $baseVersion.Major, $baseVersion.Minor, $baseVersion.Build
+            $tagPrefixForNewTag = "$env:DEVELOP_PREFIX$env:SUFFIX"
           }
           elseif ($branch -like "release/*") {
-            # Example branch: release/9.1.0  -> base='9.1.0'
-            $base = $branch -replace '^release/', ''
-            $tagPrefix = ($env:RELEASE_PREFIX_TEMPLATE -replace '\{base\}', $base) + $env:SUFFIX
-            $defaultVersion = "$base$env:DEFAULT_RELEASE_REV"
-
-            $latestTag = git tag --list "$tagPrefix*" --sort=-v:refname | Select-Object -First 1
-            if ($latestTag) {
-              $numeric = $latestTag.Substring($tagPrefix.Length)
-              $ver = [version]$numeric
-              $next = "{0}.{1}.{2}.{3}" -f $ver.Major, $ver.Minor, $ver.Build, ($ver.Revision + 1)
-            }
-            else {
-              $next = $defaultVersion
-            }
+            # Example branch: release/9.1.0  -> baseText='9.1.0'
+            $baseText = $branch -replace '^release/', ''
+            # Use DEFAULT_RELEASE_REV just to construct a full version so we can get Major/Minor/Build
+            $baseVersion = [version]("$baseText$env:DEFAULT_RELEASE_REV")
+            $tagPrefixForNewTag = ($env:RELEASE_PREFIX_TEMPLATE -replace '\{base\}', $baseText) + $env:SUFFIX
           }
           else {
             Write-Host "Non-develop, non-release branch. Skipping versioning."
@@ -259,7 +232,54 @@ jobs:
             exit 0
           }
 
-          $newTag = "$tagPrefix$next"
+          # --- Collect existing tags for this base across BOTH dev + release prefixes ---
+
+          $developPrefixForSearch = "$env:DEVELOP_PREFIX$env:SUFFIX"
+          $releasePrefixForSearch = ($env:RELEASE_PREFIX_TEMPLATE -replace '\{base\}', $baseText) + $env:SUFFIX
+
+          $candidates = @()
+
+          foreach ($p in @($developPrefixForSearch, $releasePrefixForSearch)) {
+            if (-not $p) { continue }
+
+            git tag --list "$p*" | ForEach-Object {
+              $name = $_
+              $numeric = $name.Substring($p.Length)
+              try {
+                $v = [version]$numeric
+              }
+              catch {
+                return
+              }
+
+              if ($v.Major -eq $baseVersion.Major -and
+                  $v.Minor -eq $baseVersion.Minor -and
+                  $v.Build -eq $baseVersion.Build) {
+                $candidates += $v
+              }
+            }
+          }
+
+          # --- Decide next version ---
+
+          if ($candidates.Count -gt 0) {
+            $latest = ($candidates | Sort-Object -Descending | Select-Object -First 1)
+            $next = "{0}.{1}.{2}.{3}" -f $latest.Major, $latest.Minor, $latest.Build, ($latest.Revision + 1)
+          }
+          else {
+            if ($branch -eq "develop") {
+              # First ever build for this base across ALL branches
+              $next = $env:DEFAULT_DEV_VERSION
+            }
+            else {
+              # First build on this release line, and no dev/release tags exist for this base
+              $next = "$baseText$env:DEFAULT_RELEASE_REV"
+            }
+          }
+
+          # --- Tag and output ---
+
+          $newTag = "$tagPrefixForNewTag$next"
           Write-Host "Tagging: $newTag"
           git tag $newTag
           git push origin $newTag
@@ -274,6 +294,21 @@ jobs:
           $v = if ($auto) { $auto } else { '' }
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Resolved version: $v"
+
+      - name: Detect build channel
+        id: channel
+        shell: pwsh
+        run: |
+          $branch = '${{ github.ref_name }}'
+          if ($branch -eq 'develop') {
+            "value=alpha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+          elseif ($branch -like 'release/*') {
+            "value=release" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+          else {
+            "value=other" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
 
       # ================= Build & Test =================
       - name: Build (MSBuild)
@@ -370,6 +405,7 @@ jobs:
             /p:Platform=${{ inputs['wix-platform'] }} ^
             /p:ProductVersion=${{ steps.set-version.outputs.version }} ^
             /p:BuildProjectReferences=false ^
+            /p:BuildChannel=${{ steps.channel.outputs.value }} ^
             /p:WixToolPath="${{ steps.wixpaths.outputs.WIX_BIN }}\\" ^
             /p:WixTasksPath="${{ steps.wixpaths.outputs.WIX_BIN }}\\WixTasks.dll" ^
             /nr:false ^
