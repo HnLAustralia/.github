@@ -340,12 +340,14 @@ jobs:
         run: |
           $version = '${{ steps.set-version.outputs.version }}'
           $profile = '${{ inputs['publish-profile'] }}'
+          $channel = '${{ steps.channel.outputs.value }}'
           $args = @(
             'publish', '${{ inputs['project-or-solution'] }}',
             '-c', '${{ inputs.configuration }}',
             "/p:PublishProfile=$profile"
           )
           if ($version) { $args += "/p:Version=$version" }
+          if ($channel) { $args += "/p:BuildChannel=$channel" }
           dotnet @args /p:WixTargetsImported=true
 
       # ================= WiX (optional) =================
