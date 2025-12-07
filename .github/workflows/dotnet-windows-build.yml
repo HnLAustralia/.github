@@ -76,7 +76,7 @@ on:
       publish-profile:
         description: PublishProfile name (FolderProfile, etc.)
         type: string
-        default: 'FolderProfile'
+        default: ''
 
       # === MSI (WiX) ===
       wix-project:
