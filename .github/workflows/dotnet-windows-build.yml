@@ -318,7 +318,10 @@ jobs:
           MSBuild.exe ^
             "${{ inputs['project-or-solution'] }}" /m ^
             /p:Configuration=${{ inputs.configuration }} ^
-            /p:Platform=${{ inputs['wix-platform'] }} /v:m
+            /p:Platform=${{ inputs['wix-platform'] }}
+            /p:Version=${{ steps.set-version.outputs.version }} ^
+            /p:BuildChannel=${{ steps.channel.outputs.value }} ^
+            /v:m
 
       - name: Build
         if: ${{ !inputs['build-with-msbuild'] && inputs['wix-project'] != '' && inputs['publish-profile'] == '' }}
