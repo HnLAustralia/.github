@@ -318,7 +318,7 @@ jobs:
           MSBuild.exe ^
             "${{ inputs['project-or-solution'] }}" /m ^
             /p:Configuration=${{ inputs.configuration }} ^
-            /p:Platform=${{ inputs['wix-platform'] }}
+            /p:Platform=${{ inputs['wix-platform'] }} ^
             /p:Version=${{ steps.set-version.outputs.version }} ^
             /p:BuildChannel=${{ steps.channel.outputs.value }} ^
             /v:m
