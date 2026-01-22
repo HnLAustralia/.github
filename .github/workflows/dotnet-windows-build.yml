@@ -92,6 +92,11 @@ on:
         type: string
         default: '3.11.2'
 
+      application-name:
+        description: Prefix used for artifact naming (e.g., 'SysnetOrderService', 'SCIS', etc.)
+        type: string
+        default: ${{ github.event.repository.name }}
+
     outputs:
       version:
         description: Resolved version (may be empty if versioning-mode=none on non-matching branches)
@@ -422,7 +427,15 @@ jobs:
         shell: pwsh
         run: |
           $v = '${{ steps.set-version.outputs.version }}'
-          $name = if ($v) { "build-$v" } else { "build" }
+          $app = '${{ inputs.application-name }}'
+
+          # Defensive: keep artifact names filesystem-friendly
+          $app = ($app -replace '[^A-Za-z0-9._-]', '-')  # spaces -> '-', etc.
+          $app = $app.Trim('-')
+              
+          $base = if ($v) { "build-$v" } else { "build" }
+          $name = "${app}_$base"
+
           "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Upload Publish Output (if any)
