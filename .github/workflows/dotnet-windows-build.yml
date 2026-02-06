@@ -454,6 +454,7 @@ jobs:
         run: |
           New-Item -Path "${{ github.workspace }}/_msi_staging" -ItemType Directory -Force | Out-Null
           Get-ChildItem -Path "${{ github.workspace }}" -Filter *.msi -Recurse |
+            Where-Object { $_.FullName -notlike "*_msi_staging*" } |
             ForEach-Object { Copy-Item $_.FullName -Destination "${{ github.workspace }}/_msi_staging/$($_.Name)" -Force }
 
       - name: Upload MSI (if any)
