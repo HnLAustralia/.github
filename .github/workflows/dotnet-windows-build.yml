@@ -448,12 +448,18 @@ jobs:
             **/publish/**
             **/bin/**/publish/**
 
+      - name: Stage MSI files (flatten)
+        if: ${{ inputs['wix-project'] != '' }}
+        shell: pwsh
+        run: |
+          New-Item -Path "${{ github.workspace }}/_msi_staging" -ItemType Directory -Force | Out-Null
+          Get-ChildItem -Path "${{ github.workspace }}" -Filter *.msi -Recurse |
+            ForEach-Object { Copy-Item $_.FullName -Destination "${{ github.workspace }}/_msi_staging/$($_.Name)" -Force }
+
       - name: Upload MSI (if any)
         if: ${{ inputs['wix-project'] != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.artifact-meta.outputs.name }}-msi
           if-no-files-found: ignore
-          path: |
-            **/*.msi
-            Installers/**/bin/**/**/*.msi
+          path: ${{ github.workspace }}/_msi_staging/
