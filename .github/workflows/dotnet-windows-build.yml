@@ -428,12 +428,14 @@ jobs:
         run: |
           $v = '${{ steps.set-version.outputs.version }}'
           $app = '${{ inputs.application-name }}'
+          $channel = '${{ steps.channel.outputs.value }}'
 
           # Defensive: keep artifact names filesystem-friendly
           $app = ($app -replace '[^A-Za-z0-9._-]', '-')  # spaces -> '-', etc.
           $app = $app.Trim('-')
               
           $base = if ($v) { "build-$v" } else { "build" }
+          if ($channel) { $base = "$base-$channel" }
           $name = "${app}_$base"
 
           "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
