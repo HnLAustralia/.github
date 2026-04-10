@@ -4,19 +4,18 @@ name: Promote Build (Reusable)
 on:
   workflow_call:
     inputs:
-      run_id:
-        description: "Build run ID to promote (blank = latest successful)"
+      channel:
+        description: "Build channel to promote (alpha, release)"
+        required: true
+        type: string
+      release_version:
+        description: "Release version to promote (e.g. 9.0.0) — required for release channel"
         required: false
         type: string
       version:
         description: "Version label for deployment path (e.g. 9.0.0)"
         required: true
         type: string
-      build_workflow:
-        description: "Filename of the build workflow used to find the latest successful run (e.g. CI.yml)"
-        required: false
-        type: string
-        default: "CI.yml"
     secrets:
       SSH_HOST:
         required: false
@@ -35,7 +34,7 @@ jobs:
     permissions:
       actions: read
     outputs:
-      run_id: ${{ steps.resolve.outputs.run_id }}
+      run_id: ${{ steps.artifact.outputs.run_id }}
       artifact_name: ${{ steps.artifact.outputs.name }}
       sha: ${{ steps.sha.outputs.value }}
       deploy_target: ${{ steps.deploy-target.outputs.value }}
@@ -58,44 +57,38 @@ jobs:
             echo "value=ftp" >> $GITHUB_OUTPUT
           fi
 
-      - name: Resolve run ID
-        id: resolve
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ -z "${{ inputs.run_id }}" ]; then
-            RUN_ID=$(gh run list \
-              --repo ${{ github.repository }} \
-              --workflow ${{ inputs.build_workflow }} \
-              --status success \
-              --limit 1 \
-              --json databaseId \
-              --jq '.[0].databaseId')
-            echo "Resolved to latest successful run: $RUN_ID"
-          else
-            RUN_ID="${{ inputs.run_id }}"
-            echo "Using specified run: $RUN_ID"
-          fi
-          if [ -z "$RUN_ID" ]; then
-            echo "::error::Could not resolve a successful run for workflow '${{ inputs.build_workflow }}'"
-            exit 1
-          fi
-          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
-
-      - name: Resolve artifact name
+      - name: Find artifact
         id: artifact
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ARTIFACT_NAME=$(gh api \
-            /repos/${{ github.repository }}/actions/runs/${{ steps.resolve.outputs.run_id }}/artifacts \
-            --jq '.artifacts[] | select(.name | endswith("-msi")) | .name' \
-            | head -1)
-          if [ -z "$ARTIFACT_NAME" ]; then
-            echo "::error::No -msi artifact found on run ${{ steps.resolve.outputs.run_id }}"
+          CHANNEL="${{ inputs.channel }}"
+
+          if [ "$CHANNEL" = "alpha" ]; then
+            PATTERN="-alpha-msi$"
+          else
+            RELEASE_VERSION="${{ inputs.release_version }}"
+            if [ -z "$RELEASE_VERSION" ]; then
+              echo "::error::release_version is required when channel is 'release'"
+              exit 1
+            fi
+            VERSION_ESCAPED=$(echo "$RELEASE_VERSION" | sed 's/\./\\./g')
+            PATTERN="-${VERSION_ESCAPED}\\.-release-msi$"
+          fi
+
+          RESULT=$(gh api \
+            "/repos/${{ github.repository }}/actions/artifacts?per_page=100" \
+            --jq "[.artifacts[] | select(.name | test(\"$PATTERN\")) | select(.expired == false)] | first")
+
+          if [ -z "$RESULT" ] || [ "$RESULT" = "null" ]; then
+            echo "::error::No matching $CHANNEL artifact found"
             exit 1
           fi
-          echo "Resolved artifact: $ARTIFACT_NAME"
+
+          RUN_ID=$(echo "$RESULT" | jq -r '.workflow_run.id')
+          ARTIFACT_NAME=$(echo "$RESULT" | jq -r '.name')
+          echo "Found artifact: $ARTIFACT_NAME (run: $RUN_ID)"
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
           echo "name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
 
       - name: Resolve commit SHA
@@ -103,7 +96,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          SHA=$(gh run view ${{ steps.resolve.outputs.run_id }} \
+          SHA=$(gh run view ${{ steps.artifact.outputs.run_id }} \
             --repo ${{ github.repository }} \
             --json headSha --jq '.headSha')
           echo "value=$SHA" >> $GITHUB_OUTPUT
