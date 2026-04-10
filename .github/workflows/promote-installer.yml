@@ -13,10 +13,10 @@ on:
         required: true
         type: string
       build_workflow:
-        description: "Filename of the build workflow used to find the latest successful run (e.g. build.yml)"
+        description: "Filename of the build workflow used to find the latest successful run (e.g. CI.yml)"
         required: false
         type: string
-        default: "build.yml"
+        default: "CI.yml"
     secrets:
       SSH_HOST:
         required: false
