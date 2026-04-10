@@ -1,0 +1,195 @@
+# .github/workflows/promote-installer.yml
+name: Promote Build (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      run_id:
+        description: "Build run ID to promote (blank = latest successful)"
+        required: false
+        type: string
+      version:
+        description: "Version label for deployment path (e.g. 9.0.0)"
+        required: true
+        type: string
+      build_workflow:
+        description: "Filename of the build workflow used to find the latest successful run (e.g. build.yml)"
+        required: false
+        type: string
+        default: "build.yml"
+    secrets:
+      SSH_HOST:
+        required: false
+      SSH_USERNAME:
+        required: false
+      SSH_PRIVATE_KEY:
+        required: false
+      AWS_ACCESS_KEY_ID:
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        required: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      run_id: ${{ steps.resolve.outputs.run_id }}
+      artifact_name: ${{ steps.artifact.outputs.name }}
+      sha: ${{ steps.sha.outputs.value }}
+      deploy_target: ${{ steps.deploy-target.outputs.value }}
+    steps:
+      - name: Resolve DEPLOY_TARGET
+        id: deploy-target
+        run: |
+          # Repo-level overrides org-level if set
+          REPO_LEVEL="${{ vars.DEPLOY_TARGET }}"
+          ORG_LEVEL="${{ vars.ORG_DEPLOY_TARGET }}"
+
+          if [ -n "$REPO_LEVEL" ]; then
+            echo "Using repo-level DEPLOY_TARGET: $REPO_LEVEL"
+            echo "value=$REPO_LEVEL" >> $GITHUB_OUTPUT
+          elif [ -n "$ORG_LEVEL" ]; then
+            echo "Using org-level ORG_DEPLOY_TARGET: $ORG_LEVEL"
+            echo "value=$ORG_LEVEL" >> $GITHUB_OUTPUT
+          else
+            echo "No DEPLOY_TARGET set, defaulting to ftp"
+            echo "value=ftp" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Resolve run ID
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -z "${{ inputs.run_id }}" ]; then
+            RUN_ID=$(gh run list \
+              --repo ${{ github.repository }} \
+              --workflow ${{ inputs.build_workflow }} \
+              --status success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId')
+            echo "Resolved to latest successful run: $RUN_ID"
+          else
+            RUN_ID="${{ inputs.run_id }}"
+            echo "Using specified run: $RUN_ID"
+          fi
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::Could not resolve a successful run for workflow '${{ inputs.build_workflow }}'"
+            exit 1
+          fi
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+
+      - name: Resolve artifact name
+        id: artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ARTIFACT_NAME=$(gh api \
+            /repos/${{ github.repository }}/actions/runs/${{ steps.resolve.outputs.run_id }}/artifacts \
+            --jq '.artifacts[] | select(.name | endswith("-msi")) | .name' \
+            | head -1)
+          if [ -z "$ARTIFACT_NAME" ]; then
+            echo "::error::No -msi artifact found on run ${{ steps.resolve.outputs.run_id }}"
+            exit 1
+          fi
+          echo "Resolved artifact: $ARTIFACT_NAME"
+          echo "name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+
+      - name: Resolve commit SHA
+        id: sha
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA=$(gh run view ${{ steps.resolve.outputs.run_id }} \
+            --repo ${{ github.repository }} \
+            --json headSha --jq '.headSha')
+          echo "value=$SHA" >> $GITHUB_OUTPUT
+
+  promote-ftp:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    if: needs.resolve.outputs.deploy_target == 'ftp' || needs.resolve.outputs.deploy_target == 'both'
+    steps:
+      - name: Download MSI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.resolve.outputs.artifact_name }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ./msi-drop
+
+      - name: Deploy to FTP
+        uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634  # v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "./msi-drop/*.msi"
+          target: "/ftp/sysnet-csharp/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}"
+
+      - name: Run saveFile.php
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262  # v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            /usr/bin/php /ftp/sysnet-csharp/${{ inputs.version }}/saveFile.php \
+              "${{ inputs.version }}" \
+              "${{ github.event.repository.name }}" \
+              "${{ needs.resolve.outputs.run_id }}" \
+              "${{ github.actor }}"
+
+  promote-s3:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    if: needs.resolve.outputs.deploy_target == 's3' || needs.resolve.outputs.deploy_target == 'both'
+    steps:
+      - name: Download MSI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.resolve.outputs.artifact_name }}
+          run-id: ${{ needs.resolve.outputs.run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ./msi-drop
+
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload to S3
+        run: |
+          aws s3 cp ./msi-drop/ \
+            s3://${{ vars.DEPLOY_BUCKET }}/promoted/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}/ \
+            --recursive \
+            --exclude "*" \
+            --include "*.msi"
+
+  tag:
+    needs: [resolve, promote-ftp, promote-s3]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: >-
+      always() && !failure() && !cancelled() &&
+      (needs.promote-ftp.result == 'success' || needs.promote-s3.result == 'success')
+    steps:
+      - name: Tag promoted commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api --method POST \
+            /repos/${{ github.repository }}/git/refs \
+            -f ref="refs/tags/promoted/${{ inputs.version }}/${{ needs.resolve.outputs.run_id }}" \
+            -f sha="${{ needs.resolve.outputs.sha }}"
