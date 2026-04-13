@@ -19,6 +19,12 @@ on:
         required: false
       SSH_PRIVATE_KEY:
         required: false
+      KBASE_DB_HOST:
+        required: false
+      KBASE_DB_USER:
+        required: false
+      KBASE_DB_PASS:
+        required: false
       AWS_ACCESS_KEY_ID:
         required: false
       AWS_SECRET_ACCESS_KEY:
@@ -114,21 +120,47 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "./msi-drop/*.msi"
+          source: "msi-drop/"
+          strip_components: 1
           target: "/ftp/sysnet-csharp/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}"
 
-      - name: Run saveFile.php
+      - name: Register builds in kbase
         uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262  # v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            /usr/bin/php /ftp/sysnet-csharp/${{ inputs.version }}/saveFile.php \
-              "${{ inputs.version }}" \
-              "${{ github.event.repository.name }}" \
-              "${{ needs.resolve.outputs.run_id }}" \
-              "${{ github.actor }}"
+            /usr/bin/php -r "
+              date_default_timezone_set('Australia/Adelaide');
+              \$version = '${{ inputs.version }}';
+              \$build   = '${{ needs.resolve.outputs.run_id }}';
+              \$path    = '${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}';
+              \$comment = 'GitHub Actions run ${{ needs.resolve.outputs.run_id }}';
+              \$date    = date('Y-m-d H:i:s');
+              \$dir     = '/ftp/sysnet-csharp/' . \$version . '/' . \$path . '/';
+              \$files   = glob(\$dir . '*.msi');
+              if (empty(\$files)) { echo 'No MSI files found in ' . \$dir; exit(1); }
+              try {
+                \$conn = new PDO('mysql:host=${{ secrets.KBASE_DB_HOST }};dbname=kbase', '${{ secrets.KBASE_DB_USER }}', '${{ secrets.KBASE_DB_PASS }}');
+                \$conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+                foreach (\$files as \$file) {
+                  \$filename = basename(\$file);
+                  \$chk = \$conn->prepare('SELECT id FROM jenkins_apps WHERE name=? AND version_number=? AND build_number=?');
+                  \$chk->execute([\$filename, \$version, \$build]);
+                  \$row = \$chk->fetch();
+                  if (\$row) {
+                    \$upd = \$conn->prepare('UPDATE jenkins_apps SET comment=? WHERE id=?');
+                    \$upd->execute([\$comment, \$row['id']]);
+                    echo 'Updated: ' . \$filename . PHP_EOL;
+                  } else {
+                    \$ins = \$conn->prepare('INSERT INTO jenkins_apps (name,version_number,build_number,build_date,comment,path) VALUES (?,?,?,?,?,?)');
+                    \$ins->execute([\$filename,\$version,\$build,\$date,\$comment,\$path]);
+                    echo 'Inserted: ' . \$filename . PHP_EOL;
+                  }
+                }
+              } catch(PDOException \$e) { echo \$e->getMessage(); exit(1); }
+            "
 
   promote-s3:
     needs: resolve
