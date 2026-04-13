@@ -73,6 +73,8 @@ jobs:
 
           if [ "$CHANNEL" = "alpha" ]; then
             PATTERN="-alpha-msi$"
+          elif [ "$CHANNEL" = "beta" ]; then
+            PATTERN="-beta-msi$"
           else
             VERSION_ESCAPED=$(echo "${{ inputs.version }}" | sed 's/\./\\./g')
             PATTERN="-${VERSION_ESCAPED}\\.-release-msi$"
