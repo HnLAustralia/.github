@@ -12,6 +12,11 @@ on:
         description: "Version label for deployment path and release artifact search (e.g. 9.0.0)"
         required: true
         type: string
+      comment:
+        description: "Comment to record against the build in kbase (defaults to 'GitHub Actions run <run_id>')"
+        required: false
+        type: string
+        default: ""
     secrets:
       SSH_HOST:
         required: false
@@ -136,7 +141,7 @@ jobs:
               \$version = '${{ inputs.version }}';
               \$build   = '${{ needs.resolve.outputs.run_id }}';
               \$path    = '${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}';
-              \$comment = 'GitHub Actions run ${{ needs.resolve.outputs.run_id }}';
+              \$comment = '${{ inputs.comment }}' !== '' ? '${{ inputs.comment }}' : 'GitHub Actions run ${{ needs.resolve.outputs.run_id }}';
               \$date    = date('Y-m-d H:i:s');
               \$dir     = '/ftp/sysnet-csharp/' . \$version . '/' . \$path . '/';
               \$files   = glob(\$dir . '*.msi');
