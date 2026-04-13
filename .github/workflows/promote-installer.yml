@@ -77,7 +77,7 @@ jobs:
             PATTERN="-beta-msi$"
           else
             VERSION_ESCAPED=$(echo "${{ inputs.version }}" | sed 's/\./\\./g')
-            PATTERN="-${VERSION_ESCAPED}\\.-release-msi$"
+            PATTERN="-${VERSION_ESCAPED}\\.[0-9]+-release-msi$"
           fi
 
           RESULT=$(gh api \
