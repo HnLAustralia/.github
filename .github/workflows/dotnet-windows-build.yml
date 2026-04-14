@@ -46,6 +46,10 @@ on:
         description: Prefix for develop tags
         type: string
         default: 'develop-v'
+      main-prefix:
+        description: Prefix for main branch tags (beta channel)
+        type: string
+        default: 'main-v'
       release-prefix-template:
         description: Prefix for release/* tags. Use {base} for branch base (e.g., 3.0.0)
         type: string
@@ -200,6 +204,7 @@ jobs:
         shell: pwsh
         env:
           DEVELOP_PREFIX: ${{ inputs['develop-prefix'] }}
+          MAIN_PREFIX: ${{ inputs['main-prefix'] }}
           RELEASE_PREFIX_TEMPLATE: ${{ inputs['release-prefix-template'] }}
           DEFAULT_DEV_VERSION: ${{ inputs['default-develop-version'] }}
           DEFAULT_RELEASE_REV: ${{ inputs['default-release-revision'] }}
@@ -224,6 +229,12 @@ jobs:
             $baseText = "{0}.{1}.{2}" -f $baseVersion.Major, $baseVersion.Minor, $baseVersion.Build
             $tagPrefixForNewTag = "$env:DEVELOP_PREFIX$env:SUFFIX"
           }
+          elseif ($branch -eq "main") {
+            # main uses the same base version line as develop (shares the revision sequence)
+            $baseVersion = [version]$env:DEFAULT_DEV_VERSION
+            $baseText = "{0}.{1}.{2}" -f $baseVersion.Major, $baseVersion.Minor, $baseVersion.Build
+            $tagPrefixForNewTag = "$env:MAIN_PREFIX$env:SUFFIX"
+          }
           elseif ($branch -like "release/*") {
             # Example branch: release/9.1.0  -> baseText='9.1.0'
             $baseText = $branch -replace '^release/', ''
@@ -232,7 +243,7 @@ jobs:
             $tagPrefixForNewTag = ($env:RELEASE_PREFIX_TEMPLATE -replace '\{base\}', $baseText) + $env:SUFFIX
           }
           else {
-            Write-Host "Non-develop, non-release branch. Skipping versioning."
+            Write-Host "Non-develop, non-main, non-release branch. Skipping versioning."
             "version=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             exit 0
           }
@@ -240,11 +251,12 @@ jobs:
           # --- Collect existing tags for this base across BOTH dev + release prefixes ---
 
           $developPrefixForSearch = "$env:DEVELOP_PREFIX$env:SUFFIX"
+          $mainPrefixForSearch = "$env:MAIN_PREFIX$env:SUFFIX"
           $releasePrefixForSearch = ($env:RELEASE_PREFIX_TEMPLATE -replace '\{base\}', $baseText) + $env:SUFFIX
 
           $candidates = @()
 
-          foreach ($p in @($developPrefixForSearch, $releasePrefixForSearch)) {
+          foreach ($p in @($developPrefixForSearch, $mainPrefixForSearch, $releasePrefixForSearch)) {
             if (-not $p) { continue }
 
             git tag --list "$p*" | ForEach-Object {
@@ -307,6 +319,9 @@ jobs:
           $branch = '${{ github.ref_name }}'
           if ($branch -eq 'develop') {
             "value=alpha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+          elseif ($branch -eq 'main') {
+            "value=beta" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
           elseif ($branch -like 'release/*') {
             "value=release" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
