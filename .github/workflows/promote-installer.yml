@@ -132,6 +132,9 @@ jobs:
           echo "Key header: $(head -1 /tmp/deploy_key)"
           ssh-keygen -y -f /tmp/deploy_key && echo "Key is valid" || echo "Key is INVALID"
           icacls "$(cygpath -w /tmp/deploy_key)" /inheritance:r /grant:r "$USERNAME:(R)"
+          ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} \
+            "mkdir -p /ftp/sysnet-csharp/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}"
           scp -v -i /tmp/deploy_key -o StrictHostKeyChecking=no -r ./msi-drop/* \
             ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/ftp/sysnet-csharp/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}/
           rm /tmp/deploy_key
