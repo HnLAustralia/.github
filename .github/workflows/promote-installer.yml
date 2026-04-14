@@ -43,6 +43,7 @@ jobs:
     outputs:
       run_id: ${{ steps.artifact.outputs.run_id }}
       artifact_name: ${{ steps.artifact.outputs.name }}
+      build_number: ${{ steps.artifact.outputs.build_number }}
       sha: ${{ steps.sha.outputs.value }}
       deploy_target: ${{ steps.deploy-target.outputs.value }}
     steps:
@@ -92,9 +93,11 @@ jobs:
 
           RUN_ID=$(echo "$RESULT" | jq -r '.workflow_run.id')
           ARTIFACT_NAME=$(echo "$RESULT" | jq -r '.name')
-          echo "Found artifact: $ARTIFACT_NAME (run: $RUN_ID)"
+          BUILD_NUMBER=$(echo "$ARTIFACT_NAME" | sed -E 's/.*[0-9]+\.[0-9]+\.[0-9]+\.([0-9]+).*/\1/')
+          echo "Found artifact: $ARTIFACT_NAME (run: $RUN_ID, build: $BUILD_NUMBER)"
           echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
           echo "name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
 
       - name: Resolve commit SHA
         id: sha
@@ -134,9 +137,9 @@ jobs:
           icacls "$(cygpath -w /tmp/deploy_key)" /inheritance:r /grant:r "$USERNAME:(R)"
           ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} \
-            "mkdir -p /ftp/sysnet-csharp/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}"
+            "mkdir -p /ftp/sysnet-csharp/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.build_number }}"
           scp -v -i /tmp/deploy_key -o StrictHostKeyChecking=no -r ./msi-drop/* \
-            ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/ftp/sysnet-csharp/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}/
+            ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/ftp/sysnet-csharp/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.build_number }}/
           rm /tmp/deploy_key
 
       - name: Register builds in kbase
@@ -151,8 +154,8 @@ jobs:
             '/usr/bin/php -r "
               date_default_timezone_set(\"Australia/Adelaide\");
               \$version = \"${{ inputs.version }}\";
-              \$build   = \"${{ needs.resolve.outputs.run_id }}\";
-              \$path    = \"${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}\";
+              \$build   = \"${{ needs.resolve.outputs.build_number }}\";
+              \$path    = \"${{ github.event.repository.name }}/${{ needs.resolve.outputs.build_number }}\";
               \$comment = \"${{ inputs.comment }}\" !== \"\" ? \"${{ inputs.comment }}\" : \"GitHub Actions run ${{ needs.resolve.outputs.run_id }}\";
               \$date    = date(\"Y-m-d H:i:s\");
               \$dir     = \"/ftp/sysnet-csharp/\" . \$version . \"/\" . \$path . \"/\";
@@ -205,7 +208,7 @@ jobs:
       - name: Upload to S3
         run: |
           aws s3 cp ./msi-drop/ \
-            s3://${{ vars.DEPLOY_BUCKET }}/promoted/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}/ \
+            s3://${{ vars.DEPLOY_BUCKET }}/promoted/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.build_number }}/ \
             --recursive \
             --exclude "*" \
             --include "*.msi"
