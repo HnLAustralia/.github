@@ -128,7 +128,7 @@ jobs:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           echo "$SSH_KEY" > /tmp/deploy_key
-          chmod 600 /tmp/deploy_key
+          icacls "$(cygpath -w /tmp/deploy_key)" /inheritance:r /grant:r "$USERNAME:(R)"
           scp -i /tmp/deploy_key -o StrictHostKeyChecking=no -r ./msi-drop/* \
             ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/ftp/sysnet-csharp/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}/
           rm /tmp/deploy_key
@@ -139,7 +139,7 @@ jobs:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           echo "$SSH_KEY" > /tmp/deploy_key
-          chmod 600 /tmp/deploy_key
+          icacls "$(cygpath -w /tmp/deploy_key)" /inheritance:r /grant:r "$USERNAME:(R)"
           ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no \
             ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} \
             '/usr/bin/php -r "
