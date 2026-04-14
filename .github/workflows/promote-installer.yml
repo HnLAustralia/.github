@@ -76,13 +76,14 @@ jobs:
           elif [ "$CHANNEL" = "beta" ]; then
             PATTERN="-beta-msi$"
           else
-            VERSION_ESCAPED=$(echo "${{ inputs.version }}" | sed 's/\./\\\\./g')
-            PATTERN="-${VERSION_ESCAPED}\\\\.[0-9]+-release-msi$"
+            VERSION_ESCAPED=$(echo "${{ inputs.version }}" | sed 's/\./\\./g')
+            PATTERN="-${VERSION_ESCAPED}\\.[0-9]+-release-msi$"
           fi
 
           RESULT=$(gh api \
             "/repos/${{ github.repository }}/actions/artifacts?per_page=100" \
-            --jq "[.artifacts[] | select(.name | test(\"$PATTERN\")) | select(.expired == false)] | first")
+            | jq --arg pattern "$PATTERN" \
+            '[.artifacts[] | select(.name | test($pattern)) | select(.expired == false)] | first')
 
           if [ -z "$RESULT" ] || [ "$RESULT" = "null" ]; then
             echo "::error::No matching $CHANNEL artifact found"
