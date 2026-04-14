@@ -107,7 +107,7 @@ jobs:
 
   promote-ftp:
     needs: resolve
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, X64]
     permissions:
       actions: read
     if: needs.resolve.outputs.deploy_target == 'ftp' || needs.resolve.outputs.deploy_target == 'both'
@@ -122,52 +122,56 @@ jobs:
           path: ./msi-drop
 
       - name: Deploy to FTP
-        uses: appleboy/scp-action@917f8b81dfc1ccd331fef9e2d61bdc6c8be94634  # v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "msi-drop/"
-          strip_components: 1
-          target: "/ftp/sysnet-csharp/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}"
+        shell: bash
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          echo "$SSH_KEY" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+          scp -i /tmp/deploy_key -o StrictHostKeyChecking=no -r ./msi-drop/* \
+            ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/ftp/sysnet-csharp/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}/
+          rm /tmp/deploy_key
 
       - name: Register builds in kbase
-        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262  # v1.0.3
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USERNAME }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            /usr/bin/php -r "
-              date_default_timezone_set('Australia/Adelaide');
-              \$version = '${{ inputs.version }}';
-              \$build   = '${{ needs.resolve.outputs.run_id }}';
-              \$path    = '${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}';
-              \$comment = '${{ inputs.comment }}' !== '' ? '${{ inputs.comment }}' : 'GitHub Actions run ${{ needs.resolve.outputs.run_id }}';
-              \$date    = date('Y-m-d H:i:s');
-              \$dir     = '/ftp/sysnet-csharp/' . \$version . '/' . \$path . '/';
-              \$files   = glob(\$dir . '*.msi');
-              if (empty(\$files)) { echo 'No MSI files found in ' . \$dir; exit(1); }
+        shell: bash
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          echo "$SSH_KEY" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+          ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} \
+            '/usr/bin/php -r "
+              date_default_timezone_set(\"Australia/Adelaide\");
+              \$version = \"${{ inputs.version }}\";
+              \$build   = \"${{ needs.resolve.outputs.run_id }}\";
+              \$path    = \"${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}\";
+              \$comment = \"${{ inputs.comment }}\" !== \"\" ? \"${{ inputs.comment }}\" : \"GitHub Actions run ${{ needs.resolve.outputs.run_id }}\";
+              \$date    = date(\"Y-m-d H:i:s\");
+              \$dir     = \"/ftp/sysnet-csharp/\" . \$version . \"/\" . \$path . \"/\";
+              \$files   = glob(\$dir . \"*.msi\");
+              if (empty(\$files)) { echo \"No MSI files found in \" . \$dir; exit(1); }
               try {
-                \$conn = new PDO('mysql:host=${{ secrets.KBASE_DB_HOST }};dbname=kbase', '${{ secrets.KBASE_DB_USER }}', '${{ secrets.KBASE_DB_PASS }}');
+                \$conn = new PDO(\"mysql:host=${{ secrets.KBASE_DB_HOST }};dbname=kbase\", \"${{ secrets.KBASE_DB_USER }}\", \"${{ secrets.KBASE_DB_PASS }}\");
                 \$conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
                 foreach (\$files as \$file) {
                   \$filename = basename(\$file);
-                  \$chk = \$conn->prepare('SELECT id FROM jenkins_apps WHERE name=? AND version_number=? AND build_number=?');
+                  \$chk = \$conn->prepare(\"SELECT id FROM jenkins_apps WHERE name=? AND version_number=? AND build_number=?\");
                   \$chk->execute([\$filename, \$version, \$build]);
                   \$row = \$chk->fetch();
                   if (\$row) {
-                    \$upd = \$conn->prepare('UPDATE jenkins_apps SET comment=? WHERE id=?');
-                    \$upd->execute([\$comment, \$row['id']]);
-                    echo 'Updated: ' . \$filename . PHP_EOL;
+                    \$upd = \$conn->prepare(\"UPDATE jenkins_apps SET comment=? WHERE id=?\");
+                    \$upd->execute([\$comment, \$row[\"id\"]]);
+                    echo \"Updated: \" . \$filename . PHP_EOL;
                   } else {
-                    \$ins = \$conn->prepare('INSERT INTO jenkins_apps (name,version_number,build_number,build_date,comment,path) VALUES (?,?,?,?,?,?)');
+                    \$ins = \$conn->prepare(\"INSERT INTO jenkins_apps (name,version_number,build_number,build_date,comment,path) VALUES (?,?,?,?,?,?)\");
                     \$ins->execute([\$filename,\$version,\$build,\$date,\$comment,\$path]);
-                    echo 'Inserted: ' . \$filename . PHP_EOL;
+                    echo \"Inserted: \" . \$filename . PHP_EOL;
                   }
                 }
               } catch(PDOException \$e) { echo \$e->getMessage(); exit(1); }
-            "
+            "'
+          rm /tmp/deploy_key
 
   promote-s3:
     needs: resolve
