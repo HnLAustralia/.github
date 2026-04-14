@@ -129,7 +129,7 @@ jobs:
         run: |
           echo "$SSH_KEY" > /tmp/deploy_key
           icacls "$(cygpath -w /tmp/deploy_key)" /inheritance:r /grant:r "$USERNAME:(R)"
-          scp -i /tmp/deploy_key -o StrictHostKeyChecking=no -r ./msi-drop/* \
+          scp -v -i /tmp/deploy_key -o StrictHostKeyChecking=no -r ./msi-drop/* \
             ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/ftp/sysnet-csharp/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}/
           rm /tmp/deploy_key
 
