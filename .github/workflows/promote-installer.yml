@@ -127,7 +127,9 @@ jobs:
         env:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
-          echo "$SSH_KEY" | tr -d '\r' > /tmp/deploy_key
+          printf '%b' "$SSH_KEY" | tr -d '\r' > /tmp/deploy_key
+          echo "Key line count: $(wc -l < /tmp/deploy_key)"
+          echo "Key header: $(head -1 /tmp/deploy_key)"
           icacls "$(cygpath -w /tmp/deploy_key)" /inheritance:r /grant:r "$USERNAME:(R)"
           scp -v -i /tmp/deploy_key -o StrictHostKeyChecking=no -r ./msi-drop/* \
             ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/ftp/sysnet-csharp/${{ inputs.version }}/${{ github.event.repository.name }}/${{ needs.resolve.outputs.run_id }}/
