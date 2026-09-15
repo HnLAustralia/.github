@@ -209,7 +209,17 @@ jobs:
           
       # *** ENV / TOOLING ***
 
+      # Only the paths that actually shell out to MSBuild.exe need it. That is the union of three
+      # conditions, and it has to stay the union or a step invokes a tool that was never set up:
+      #   - build-with-msbuild        -> the "Build (MSBuild)" step
+      #   - wix-project == ''         -> ALSO the "Build (MSBuild)" step, which fires when there
+      #                                  is no installer (see its condition; surprising, but real)
+      #   - wix-toolset-major == '3'  -> "Resolve WiX paths" and "Build MSI (WiX)", both of which
+      #                                  call MSBuild.exe directly
+      # A WiX 6 repo building with `dotnet build` matches none of them and was previously paying
+      # for this on every run without ever touching it.
       - name: Setup MSBuild (Visual Studio)
+        if: ${{ inputs['build-with-msbuild'] || inputs['wix-project'] == '' || inputs['wix-toolset-major'] == '3' }}
         uses: microsoft/setup-msbuild@v2
 
       - name: Setup .NET SDK

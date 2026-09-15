@@ -196,7 +196,7 @@ try {
             if (-not $r.Timestamped) {
                 # Not cosmetic. Without an RFC 3161 counter-signature every signature becomes
                 # invalid the day the certificate expires - retroactively, including MSIs
-                # already installed at venues. With one they stay valid for the life of the
+                # already installed on target machines. With one they stay valid for the life of the
                 # timestamp.
                 $problems += "$($r.What) has NO TIMESTAMP ($($r.Path))"
             }
