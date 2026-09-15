@@ -118,9 +118,10 @@ on:
         default: '3'
       wix-publish-dir:
         description: >
-          WiX 6 only. PublishDir handed to the .wixproj, i.e. the directory it harvests. Required
-          for a self-contained publish, where the installer packages the publish output rather
-          than a project's bin folder.
+          WiX 6 only. PublishDir handed to the .wixproj, i.e. the directory it harvests. Defaults
+          to publish-output-dir, which is almost always the same directory - set it only when the
+          installer harvests somewhere other than where the app was published to. If neither is
+          set, the .wixproj is left to its own default.
         type: string
         default: ''
 
@@ -152,14 +153,6 @@ on:
           -DEMO-SIGNED and are not gated on chain trust.
         type: string
         default: 'PROD'
-      shared-ci-ref:
-        description: >
-          Ref of HnLAustralia/.github to take the signature verification script from. Defaults to
-          the tag this workflow ships under, so the script always matches the workflow; override
-          it only when testing an unreleased change to either.
-        type: string
-        default: 'v10-windows'
-
       application-name:
         description: Prefix used for artifact naming (e.g., 'SysnetOrderService', 'SCIS', etc.)
         type: string
@@ -598,13 +591,21 @@ jobs:
         run: |
           $buildArgs = @(
             'build', '${{ inputs['wix-project'] }}',
-            '-c', '${{ inputs.configuration }}'
+            '-c', '${{ inputs.configuration }}',
+            # Same reason the WiX 3 path sets it: the application has already been published and
+            # signed by this point, and a .wixproj that project-references it would rebuild it
+            # here - harvesting something other than what was signed.
+            '-p:BuildProjectReferences=false'
           )
           $version = '${{ steps.set-version.outputs.version }}'
           if ($version) { $buildArgs += "-p:Version=$version" }
           $channel = '${{ steps.channel.outputs.value }}'
           if ($channel) { $buildArgs += "-p:BuildChannel=$channel" }
+          # Falls back to publish-output-dir rather than silently letting the .wixproj use its own
+          # default: publishing and signing one directory while the installer harvests another is
+          # a wrong payload with no error anywhere, which is the worst shape a bug can take here.
           $publishDir = '${{ inputs['wix-publish-dir'] }}'
+          if (-not $publishDir) { $publishDir = '${{ inputs['publish-output-dir'] }}' }
           if ($publishDir) {
             # Absolute: the .wixproj resolves PublishDir relative to itself, not to the workspace,
             # so a relative value silently harvests nothing and yields an MSI missing its payload.
@@ -645,17 +646,27 @@ jobs:
           override: true
 
       # Taken from this repo rather than the caller's, so every signing repo gets the same check
-      # and a fix reaches all of them at once. Public repo, so no token is needed. Pinned to
-      # shared-ci-ref, which defaults to the tag this workflow ships under - the script and the
-      # workflow that calls it therefore always move together.
+      # and a fix reaches all of them at once.
+      #
+      # Pinned to job_workflow_sha: the exact commit of the reusable workflow currently running,
+      # so the script is always the one that shipped with it. This was a caller-supplied ref
+      # defaulting to a tag, which was wrong twice over - tags are mutable, so the code executed
+      # here could be changed under every caller without touching this file, and a caller could
+      # point it anywhere. That is the same argument used two steps up for pinning the eSigner
+      # action to a SHA rather than @develop, and it applies just as much to a script this job
+      # executes while holding the package token.
+      #
+      # persist-credentials: false because nothing here needs to authenticate - this repo is
+      # public - and the default would otherwise leave a token in .shared-ci/.git/config.
       - name: Check out shared signing scripts
         if: ${{ inputs.sign && inputs['wix-project'] != '' }}
         uses: actions/checkout@v4
         with:
           repository: HnLAustralia/.github
-          ref: ${{ inputs['shared-ci-ref'] }}
+          ref: ${{ github.job_workflow_sha }}
           path: .shared-ci
           fetch-depth: 1
+          persist-credentials: false
 
       # Runs BEFORE the upload, so nothing unsigned is ever published. The check that earns its
       # place is the executable INSIDE the MSI: both signing steps report success even when the
