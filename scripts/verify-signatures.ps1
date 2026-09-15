@@ -132,6 +132,67 @@ function Add-Result {
     })
 }
 
+function Get-SignatureProblems {
+    param([object[]]$Items)
+
+    $problems = @()
+
+    foreach ($r in $Items) {
+        if (-not $r.Signed) {
+            $problems += "$($r.What) is NOT SIGNED ($($r.Path))"
+        }
+        else {
+            if (-not $r.Timestamped) {
+                # Not cosmetic. Without an RFC 3161 counter-signature every signature becomes
+                # invalid the day the certificate expires - retroactively, including MSIs
+                # already installed on target machines. With one they stay valid for the life
+                # of the timestamp.
+                $problems += "$($r.What) has NO TIMESTAMP ($($r.Path))"
+            }
+
+            # Deliberately gates on WHO issued it rather than on chain trust. Both the sandbox
+            # certificate and the real one are issued by SSL Corp, so this passes today and
+            # keeps passing after the swap - no landmine that turns CI red on a future release
+            # branch. What it does catch is a signature from somewhere else entirely: an
+            # organisation's own dev certificate wired in here would otherwise look exactly
+            # like success.
+            if (-not $r.FromIssuer) {
+                $problems += ("$($r.What) was not issued by '$ExpectedIssuer' - got: " +
+                              "$($r.Issuer)")
+            }
+
+            # Present is not the same as INTACT, and every other column here fails to notice
+            # the difference. Get-AuthenticodeSignature populates SignerCertificate whenever a
+            # signature exists, so a file modified AFTER it was signed still reads as signed,
+            # correctly issued and timestamped - only Status says HashMismatch. That is not a
+            # chain-trust question, so it cannot wait for -ExpectTrusted, which CI does not
+            # pass while the sandbox certificate is in use: without this line a tampered
+            # artefact verifies clean today.
+            if ($r.Status -eq 'HashMismatch') {
+                $problems += ("$($r.What) has been MODIFIED since it was signed - the " +
+                              "signature no longer matches the file ($($r.Path))")
+            }
+            # Exactly two statuses are legitimate here: Valid (real certificate, trusted chain)
+            # and NotTrusted (sandbox certificate, which reaches no trusted root by design).
+            # Everything else - UnknownError, Incompatible, and the rest of the enum - still
+            # carries a SignerCertificate, so it passes the signed/issuer/timestamp columns and
+            # would otherwise be reported as verified. Whitelisting the two expected values
+            # means a status nobody anticipated fails loudly instead of quietly counting as
+            # success.
+            elseif ($r.Status -notin @('Valid', 'NotTrusted')) {
+                $problems += ("$($r.What) has an unexpected signature status '$($r.Status)' - " +
+                              "only Valid or NotTrusted are expected ($($r.Path))")
+            }
+        }
+
+        if ($ExpectTrusted -and -not $r.Trusted) {
+            $problems += "$($r.What) chain is not trusted: $($r.Status)"
+        }
+    }
+
+    return $problems
+}
+
 # ---------------------------------------------------------------------------
 # The MSI, and the executable it was built from
 # ---------------------------------------------------------------------------
@@ -143,6 +204,28 @@ if ($PublishExe) {
         throw "Publish executable not found: $PublishExe"
     }
     Add-Result -What 'Executable (publish dir)' -Path (Resolve-Path -LiteralPath $PublishExe).Path
+}
+
+# ---------------------------------------------------------------------------
+# Judge the MSI BEFORE opening it
+# ---------------------------------------------------------------------------
+
+# Extraction below is an administrative install, and an administrative install runs the MSI's
+# AdminExecuteSequence - which can carry custom actions. For a package this job just built that
+# is academic, but this script is also documented for use against a downloaded artefact, and
+# executing an untrusted installer's actions in order to find out whether it can be trusted is
+# the wrong way round. So the MSI's own signature is judged first and a bad one stops here,
+# before Windows Installer is handed the file.
+#
+# This narrows the window rather than closing it: a validly signed but hostile MSI still gets
+# extracted. Closing it completely means reading the File/Media tables directly or taking a
+# dependency like lessmsi, neither of which is worth it for the CI case this primarily serves.
+$msiProblems = @(Get-SignatureProblems -Items @($results | Where-Object { $_.What -eq 'MSI' }))
+if ($msiProblems.Count -gt 0) {
+    Write-Host ''
+    foreach ($p in $msiProblems) { Write-Host "FAIL: $p" }
+    throw ("The MSI failed its own signature checks, so it was NOT extracted " +
+           "($($msiProblems.Count) problem(s)). Nothing was executed.")
 }
 
 # ---------------------------------------------------------------------------
@@ -186,59 +269,7 @@ try {
     # Verdict
     # -----------------------------------------------------------------------
 
-    $problems = @()
-
-    foreach ($r in $results) {
-        if (-not $r.Signed) {
-            $problems += "$($r.What) is NOT SIGNED ($($r.Path))"
-        }
-        else {
-            if (-not $r.Timestamped) {
-                # Not cosmetic. Without an RFC 3161 counter-signature every signature becomes
-                # invalid the day the certificate expires - retroactively, including MSIs
-                # already installed on target machines. With one they stay valid for the life of the
-                # timestamp.
-                $problems += "$($r.What) has NO TIMESTAMP ($($r.Path))"
-            }
-
-            # Deliberately gates on WHO issued it rather than on chain trust. Both the sandbox
-            # certificate and the real one are issued by SSL Corp, so this passes today and
-            # keeps passing after the swap - no landmine that turns CI red on a future release
-            # branch. What it does catch is a signature from somewhere else entirely: the
-            # organisation also holds HALDEVCERT_PFX_B64, and someone wiring that in here
-            # instead would otherwise look exactly like success.
-            if (-not $r.FromIssuer) {
-                $problems += ("$($r.What) was not issued by '$ExpectedIssuer' - got: " +
-                              "$($r.Issuer)")
-            }
-
-            # Present is not the same as INTACT, and every other column here fails to notice
-            # the difference. Get-AuthenticodeSignature populates SignerCertificate whenever a
-            # signature exists, so a file modified AFTER it was signed still reads as signed,
-            # correctly issued and timestamped - only Status says HashMismatch. That is not a
-            # chain-trust question, so it cannot wait for -ExpectTrusted, which CI does not pass
-            # while the sandbox certificate is in use: without this line a tampered artefact
-            # verifies clean today.
-            if ($r.Status -eq 'HashMismatch') {
-                $problems += ("$($r.What) has been MODIFIED since it was signed - the " +
-                              "signature no longer matches the file ($($r.Path))")
-            }
-            # Exactly two statuses are legitimate here: Valid (real certificate, trusted chain)
-            # and NotTrusted (sandbox certificate, which reaches no trusted root by design).
-            # Everything else - UnknownError, Incompatible, and the rest of the enum - still
-            # carries a SignerCertificate, so it passes the signed/issuer/timestamp columns and
-            # would otherwise be reported as verified. Whitelisting the two expected values means
-            # a status nobody anticipated fails loudly instead of quietly counting as success.
-            elseif ($r.Status -notin @('Valid', 'NotTrusted')) {
-                $problems += ("$($r.What) has an unexpected signature status '$($r.Status)' - " +
-                              "only Valid or NotTrusted are expected ($($r.Path))")
-            }
-        }
-
-        if ($ExpectTrusted -and -not $r.Trusted) {
-            $problems += "$($r.What) chain is not trusted: $($r.Status)"
-        }
-    }
+    $problems = @(Get-SignatureProblems -Items $results)
 
     # Say the specific thing rather than leaving whoever reads this to work it out. This exact
     # combination has one cause: something re-published the project between signing and the

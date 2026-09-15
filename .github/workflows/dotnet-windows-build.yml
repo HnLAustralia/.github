@@ -232,6 +232,20 @@ jobs:
       # signing action, which reports its own failure far later and far less clearly - after a
       # full publish, on a step whose error text is about CodeSignTool rather than about
       # configuration.
+      # Both MSI build steps match an exact string, and the staging/upload steps are gated only
+      # on wix-project with if-no-files-found: ignore. So 'wix-toolset-major: 6.0' - or any other
+      # typo - builds nothing, uploads nothing, and reports success. A green run with no
+      # installer is the worst outcome available here, so the value is checked up front.
+      - name: Check WiX configuration
+        if: ${{ inputs['wix-project'] != '' }}
+        shell: pwsh
+        run: |
+          $major = '${{ inputs['wix-toolset-major'] }}'
+          if ($major -notin @('3', '6')) {
+            throw "wix-toolset-major must be '3' or '6', got '$major'. Any other value silently skips both MSI build steps while the upload tolerates the missing file, so the run would go green with no installer."
+          }
+          Write-Host "WiX major version: $major"
+
       - name: Check signing configuration
         if: ${{ inputs.sign }}
         shell: pwsh
