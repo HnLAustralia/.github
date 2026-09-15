@@ -34,7 +34,13 @@
 .PARAMETER PublishExe
     The signed executable in the publish directory, checked as well when supplied. Its result
     against the extracted copy is what localises a failure: publish signed + extracted unsigned
-    means the MSI build overwrote it.
+    means the MSI build overwrote it. Its file name is also the default for -ExecutableName.
+
+.PARAMETER ExecutableName
+    File name of the executable to find inside the MSI, e.g. MyService.exe. Defaults to the leaf
+    of -PublishExe; one of the two must be given. There is no sensible default: an installer
+    carries many files and only the caller knows which one is the application binary this is
+    supposed to be vouching for.
 
 .PARAMETER ExpectedIssuer
     Substring the issuer DN must contain. Defaults to the certificate authority rather than
@@ -66,12 +72,25 @@
 param(
     [Parameter(Mandatory = $true)][string]$MsiPath,
     [string]$PublishExe,
+    [string]$ExecutableName,
     [string]$ExpectedIssuer = 'O=SSL Corp',
     [switch]$ExpectTrusted
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# Which executable to look for inside the MSI. Taken from -ExecutableName, else from the leaf of
+# -PublishExe. One of the two is required: this script's entire job is to check the binary that
+# actually ships, and it cannot guess which of an installer's files that is.
+if (-not $ExecutableName) {
+    if ($PublishExe) {
+        $ExecutableName = Split-Path -Leaf $PublishExe
+    }
+    else {
+        throw "Pass -ExecutableName (or -PublishExe, whose file name is used) so this knows which executable inside the MSI to verify."
+    }
+}
 
 if (-not (Test-Path -LiteralPath $MsiPath)) {
     throw "MSI not found: $MsiPath"
@@ -133,7 +152,7 @@ if ($PublishExe) {
 # An administrative install unpacks the MSI without installing it, keeping real file names.
 # Native to Windows, so no lessmsi or 7-Zip dependency, and no service is registered on the
 # machine running this.
-$extractRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("sen96-verify-" + [guid]::NewGuid().ToString('n'))
+$extractRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("msi-verify-" + [guid]::NewGuid().ToString('n'))
 New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
 
 try {
@@ -146,9 +165,9 @@ try {
 
     # @() because Get-ChildItem returns a bare FileInfo when it matches exactly one file, and
     # under Set-StrictMode a scalar has no Count - which is the case this check exists for.
-    $extracted = @(Get-ChildItem -Path $extractRoot -Filter 'SysnetSentinelService.exe' -Recurse -File)
+    $extracted = @(Get-ChildItem -Path $extractRoot -Filter $ExecutableName -Recurse -File)
     if ($extracted.Count -ne 1) {
-        throw ("Expected exactly one SysnetSentinelService.exe inside the MSI, found " +
+        throw ("Expected exactly one $ExecutableName inside the MSI, found " +
                "$($extracted.Count). Extracted to $extractRoot.")
     }
 

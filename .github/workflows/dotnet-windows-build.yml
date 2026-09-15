@@ -252,6 +252,14 @@ jobs:
           if (-not "${{ inputs['sign-file'] }}" -and -not "${{ inputs['wix-project'] }}") {
             throw "sign: true but there is nothing to sign - set sign-file, wix-project, or both."
           }
+          # sign-file is not optional once an MSI is in play. Verify extracts the MSI and requires
+          # the application binary inside it to be signed, so without sign-file the run builds an
+          # MSI from an unsigned publish, signs the MSI, and only then fails - after the signing,
+          # on an error about the binary rather than about configuration. Fail here in two seconds
+          # instead.
+          if ("${{ inputs['wix-project'] }}" -and -not "${{ inputs['sign-file'] }}") {
+            throw "sign: true with wix-project set also needs sign-file - the MSI's own signature is not evidence that the executable inside it is signed, and that is what gets verified."
+          }
           Write-Host "Signing enabled, environment: ${{ inputs['esigner-environment'] }}"
 
       - name: Ensure WiX Toolset version
@@ -661,9 +669,14 @@ jobs:
         if: ${{ inputs.sign && inputs['wix-project'] != '' }}
         shell: pwsh
         run: |
-          $verifyArgs = @{ MsiPath = '${{ steps.msi.outputs.path }}' }
-          if ('${{ inputs['sign-file'] }}') {
-            $verifyArgs.PublishExe = Join-Path '${{ github.workspace }}' '${{ inputs['sign-file'] }}'
+          # ExecutableName is what the script looks for inside the MSI. It comes from sign-file
+          # rather than being assumed, so this works for any repo's installer - the guard above
+          # has already established sign-file is set whenever an MSI is being signed.
+          $signFile = '${{ inputs['sign-file'] }}'
+          $verifyArgs = @{
+            MsiPath        = '${{ steps.msi.outputs.path }}'
+            PublishExe     = Join-Path '${{ github.workspace }}' $signFile
+            ExecutableName = Split-Path -Leaf $signFile
           }
           if ('${{ inputs['esigner-environment'] }}' -eq 'PROD') { $verifyArgs.ExpectTrusted = $true }
           & "${{ github.workspace }}/.shared-ci/scripts/verify-signatures.ps1" @verifyArgs
