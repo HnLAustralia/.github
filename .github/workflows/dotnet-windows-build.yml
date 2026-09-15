@@ -81,6 +81,19 @@ on:
         description: PublishProfile name (FolderProfile, etc.)
         type: string
         default: ''
+      publish-output-dir:
+        description: >
+          Output directory for `dotnet publish` (-o), relative to the workspace. An alternative to
+          publish-profile for the case an installer harvests: publish to a known directory, sign
+          what is in it, then hand that directory to the .wixproj as wix-publish-dir. Unlike
+          publish-profile this does not upload the publish output as its own artifact - it is
+          build input for the MSI, not something to ship twice.
+        type: string
+        default: ''
+      publish-self-contained:
+        description: Publish self-contained (--self-contained) against the chosen runtime
+        type: boolean
+        default: false
 
       # === MSI (WiX) ===
       wix-project:
@@ -92,9 +105,60 @@ on:
         type: string
         default: 'x86'
       wix-version:
-        description: WiX Toolset 3.x version to install (e.g., 3.11.2)
+        description: WiX Toolset 3.x version to install (e.g., 3.11.2). Ignored when wix-toolset-major is 6.
         type: string
         default: '3.11.2'
+      wix-toolset-major:
+        description: >
+          WiX major version. '3' installs the toolset via chocolatey and builds the .wixproj with
+          MSBuild (the fleet default). '6' needs no toolset install at all - a WiX 6 .wixproj is
+          SDK-style and builds with plain `dotnet build`, restoring the compiler as a NuGet
+          package - so none of the WiX 3 path resolution below applies to it.
+        type: string
+        default: '3'
+      wix-publish-dir:
+        description: >
+          WiX 6 only. PublishDir handed to the .wixproj, i.e. the directory it harvests. Required
+          for a self-contained publish, where the installer packages the publish output rather
+          than a project's bin folder.
+        type: string
+        default: ''
+
+      # === CODE SIGNING (SSL.com eSigner) ===
+      #
+      # Off by default: a repo opts in with sign: true and supplies the four ES_* secrets.
+      #
+      # Order matters more than anything else here. The application executable is signed BEFORE
+      # the MSI is built, because the .wixproj packages whatever is sitting in the publish
+      # directory - sign afterwards and you ship a signed installer carrying an unsigned binary,
+      # which passes every check anyone thinks to run on the MSI and fails the one that matters
+      # on the target machine. The verify step exists to make that mistake impossible to miss.
+      sign:
+        description: Sign the application executable and the MSI with SSL.com eSigner
+        type: boolean
+        default: false
+      sign-file:
+        description: >
+          Executable to sign before the MSI is built. One file: the fleet's installers each ship a
+          single owned executable. Extending to several means switching to eSigner batch signing,
+          which is a different command and not wired up here.
+        type: string
+        default: ''
+      esigner-environment:
+        description: >
+          'PROD' for the real certificate, 'TEST' for SSL.com's public sandbox. TEST produces a
+          structurally real signature that chains to an untrusted test CA, so it proves the
+          pipeline and proves nothing about publisher trust - builds signed that way are labelled
+          -DEMO-SIGNED and are not gated on chain trust.
+        type: string
+        default: 'PROD'
+      shared-ci-ref:
+        description: >
+          Ref of HnLAustralia/.github to take the signature verification script from. Defaults to
+          the tag this workflow ships under, so the script always matches the workflow; override
+          it only when testing an unreleased change to either.
+        type: string
+        default: 'v10-windows'
 
       application-name:
         description: Prefix used for artifact naming (e.g., 'SysnetOrderService', 'SCIS', etc.)
@@ -112,6 +176,24 @@ on:
     secrets:
       GH_PACKAGES_TOKEN:
         description: Optional PAT for cross-repo GitHub Packages restore (fallback to GITHUB_TOKEN)
+        required: false
+
+      # Declared individually and passed individually by each caller. Deliberately NOT relying on
+      # `secrets: inherit` - these four together are the whole signing credential, and inherit
+      # would hand every secret a calling repo holds to this workflow whether or not it signs.
+      # Marked required: false so non-signing callers need not supply them; the guard step below
+      # fails fast, by name, when sign is true and one is missing.
+      ES_USERNAME:
+        description: SSL.com eSigner account username (required when sign=true)
+        required: false
+      ES_PASSWORD:
+        description: SSL.com eSigner account password (required when sign=true)
+        required: false
+      ES_CREDENTIAL_ID:
+        description: SSL.com eSigner signing credential id (required when sign=true)
+        required: false
+      ES_TOTP_SECRET:
+        description: SSL.com eSigner TOTP secret for automated signing (required when sign=true)
         required: false
 
 jobs:
@@ -142,8 +224,38 @@ jobs:
         with:
           dotnet-version: ${{ inputs['dotnet-version'] }}
 
+      # Fails before anything is built, and names the missing secret. Without this, a caller that
+      # sets sign: true but forgets to pass a secret gets an empty credential handed to the
+      # signing action, which reports its own failure far later and far less clearly - after a
+      # full publish, on a step whose error text is about CodeSignTool rather than about
+      # configuration.
+      - name: Check signing configuration
+        if: ${{ inputs.sign }}
+        shell: pwsh
+        # Through env, not interpolated into the script body: an expression is substituted into
+        # the rendered command before the shell ever runs, so the credential would sit in the
+        # script text itself. As environment variables they are only ever read by name.
+        env:
+          ES_USERNAME: ${{ secrets.ES_USERNAME }}
+          ES_PASSWORD: ${{ secrets.ES_PASSWORD }}
+          ES_CREDENTIAL_ID: ${{ secrets.ES_CREDENTIAL_ID }}
+          ES_TOTP_SECRET: ${{ secrets.ES_TOTP_SECRET }}
+        run: |
+          $missing = @()
+          if (-not $env:ES_USERNAME)      { $missing += 'ES_USERNAME' }
+          if (-not $env:ES_PASSWORD)      { $missing += 'ES_PASSWORD' }
+          if (-not $env:ES_CREDENTIAL_ID) { $missing += 'ES_CREDENTIAL_ID' }
+          if (-not $env:ES_TOTP_SECRET)   { $missing += 'ES_TOTP_SECRET' }
+          if ($missing.Count -gt 0) {
+            throw ("sign: true but these secrets were not passed by the caller: {0}. Pass each one explicitly under `secrets:` in the calling workflow." -f ($missing -join ', '))
+          }
+          if (-not "${{ inputs['sign-file'] }}" -and -not "${{ inputs['wix-project'] }}") {
+            throw "sign: true but there is nothing to sign - set sign-file, wix-project, or both."
+          }
+          Write-Host "Signing enabled, environment: ${{ inputs['esigner-environment'] }}"
+
       - name: Ensure WiX Toolset version
-        if: ${{ inputs['wix-project'] != '' && inputs['wix-version'] != '' }}
+        if: ${{ inputs['wix-project'] != '' && inputs['wix-version'] != '' && inputs['wix-toolset-major'] == '3' }}
         shell: pwsh
         run: |
           $desired = "${{ inputs['wix-version'] }}"
@@ -358,25 +470,57 @@ jobs:
 
       # ================= Publish (optional) =================
       - name: Publish
-        if: ${{ inputs['publish-profile'] != '' }}
+        if: ${{ inputs['publish-profile'] != '' || inputs['publish-output-dir'] != '' }}
         shell: pwsh
         run: |
           $version = '${{ steps.set-version.outputs.version }}'
           $profile = '${{ inputs['publish-profile'] }}'
+          $outDir  = '${{ inputs['publish-output-dir'] }}'
           $channel = '${{ steps.channel.outputs.value }}'
           $args = @(
             'publish', '${{ inputs['project-or-solution'] }}',
-            '-c', '${{ inputs.configuration }}',
-            "/p:PublishProfile=$profile"
+            '-c', '${{ inputs.configuration }}'
           )
+          if ($profile) { $args += "/p:PublishProfile=$profile" }
+          if ($outDir) {
+            # Runtime and self-contained are explicit here rather than left to the project, so the
+            # same csproj can be published framework-dependent by one caller and self-contained by
+            # another without editing it.
+            $args += @('-r', '${{ inputs.runtime }}', '-o', $outDir)
+            # Value as a separate argument: the dotnet CLI takes `--self-contained true`, not the
+            # MSBuild-style `--self-contained:true`, which it rejects.
+            $args += @('--self-contained', '${{ inputs['publish-self-contained'] }}'.ToLower())
+          }
           if ($version) { $args += "/p:Version=$version" }
           if ($channel) { $args += "/p:BuildChannel=$channel" }
+          Write-Host "dotnet $args"
           dotnet @args /p:WixTargetsImported=true
 
       # ================= WiX (optional) =================
+      # ================= Code signing: the executable, before the MSI =================
+      #
+      # PINNED TO A COMMIT, not to @develop as SSL.com's own documentation shows. This action is
+      # handed the whole signing credential, so a branch reference means the code that receives
+      # it can change without anyone in this org reviewing it. The SHA is what @develop resolved
+      # to when it was pinned. Worth knowing for whoever updates it: upstream tags releases but
+      # does not merge them back, so develop sits behind the v1.3.2 tag (cf5f6c1, 2025-12-22) -
+      # moving to the tag is an upgrade to verify, not a rename.
+      - name: Sign application executable
+        if: ${{ inputs.sign && inputs['sign-file'] != '' }}
+        uses: sslcom/esigner-codesign@b7f8ff36fc0de8690fbbab8e5b4421d29802f747  # develop @ 2025-06-23
+        with:
+          command: sign
+          username: ${{ secrets.ES_USERNAME }}
+          password: ${{ secrets.ES_PASSWORD }}
+          credential_id: ${{ secrets.ES_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ES_TOTP_SECRET }}
+          environment_name: ${{ inputs['esigner-environment'] }}
+          file_path: ${{ github.workspace }}\${{ inputs['sign-file'] }}
+          override: true
+
       - name: Resolve WiX paths
         id: wixpaths
-        if: ${{ inputs['wix-project'] != '' }}
+        if: ${{ inputs['wix-project'] != '' && inputs['wix-toolset-major'] == '3' }}
         shell: pwsh
         run: |
           # Verify what the .wixproj thinks WixTargetsPath is
@@ -421,7 +565,7 @@ jobs:
           "WIX_BIN=$wixBin" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Build MSI (WiX)
-        if: ${{ inputs['wix-project'] != '' }}
+        if: ${{ inputs['wix-project'] != '' && inputs['wix-toolset-major'] == '3' }}
         shell: cmd
         run: |
           MSBuild.exe ^
@@ -435,6 +579,94 @@ jobs:
             /p:WixTasksPath="${{ steps.wixpaths.outputs.WIX_BIN }}\\WixTasks.dll" ^
             /nr:false ^
             /t:Rebuild /v:m
+
+      # A WiX 6 .wixproj is SDK-style: the compiler arrives as a NuGet package on restore, so
+      # there is no toolset to install, no WixToolPath to resolve, and no MSBuild.exe needed.
+      # Version flows in as Version rather than ProductVersion, matching the SDK-style property
+      # the .wixproj binds its Package/@Version to.
+      - name: Build MSI (WiX 6)
+        if: ${{ inputs['wix-project'] != '' && inputs['wix-toolset-major'] == '6' }}
+        shell: pwsh
+        run: |
+          $buildArgs = @(
+            'build', '${{ inputs['wix-project'] }}',
+            '-c', '${{ inputs.configuration }}'
+          )
+          $version = '${{ steps.set-version.outputs.version }}'
+          if ($version) { $buildArgs += "-p:Version=$version" }
+          $channel = '${{ steps.channel.outputs.value }}'
+          if ($channel) { $buildArgs += "-p:BuildChannel=$channel" }
+          $publishDir = '${{ inputs['wix-publish-dir'] }}'
+          if ($publishDir) {
+            # Absolute: the .wixproj resolves PublishDir relative to itself, not to the workspace,
+            # so a relative value silently harvests nothing and yields an MSI missing its payload.
+            $buildArgs += "-p:PublishDir=$(Join-Path '${{ github.workspace }}' $publishDir)"
+          }
+          Write-Host "dotnet $buildArgs"
+          dotnet @buildArgs
+
+      # ================= Code signing: the MSI =================
+      - name: Locate the built MSI
+        id: msi
+        if: ${{ inputs.sign && inputs['wix-project'] != '' }}
+        shell: pwsh
+        run: |
+          # Resolved rather than hardcoded: the leaf name carries the build channel in some
+          # repos, so a channel rename must not quietly leave the MSI unsigned while this step
+          # still reports success. Exactly one is expected - more than one means the glob is
+          # picking up a stale build and signing the wrong file is worse than failing here.
+          $found = @(Get-ChildItem -Path "${{ github.workspace }}" -Filter *.msi -Recurse |
+            Where-Object { $_.FullName -notlike "*_msi_staging*" })
+          if ($found.Count -ne 1) {
+            throw "Expected exactly one MSI, found $($found.Count): $($found.FullName -join ', ')"
+          }
+          "path=$($found[0].FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "MSI: $($found[0].FullName)"
+
+      - name: Sign MSI
+        if: ${{ inputs.sign && inputs['wix-project'] != '' }}
+        uses: sslcom/esigner-codesign@b7f8ff36fc0de8690fbbab8e5b4421d29802f747  # develop @ 2025-06-23
+        with:
+          command: sign
+          username: ${{ secrets.ES_USERNAME }}
+          password: ${{ secrets.ES_PASSWORD }}
+          credential_id: ${{ secrets.ES_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ES_TOTP_SECRET }}
+          environment_name: ${{ inputs['esigner-environment'] }}
+          file_path: ${{ steps.msi.outputs.path }}
+          override: true
+
+      # Taken from this repo rather than the caller's, so every signing repo gets the same check
+      # and a fix reaches all of them at once. Public repo, so no token is needed. Pinned to
+      # shared-ci-ref, which defaults to the tag this workflow ships under - the script and the
+      # workflow that calls it therefore always move together.
+      - name: Check out shared signing scripts
+        if: ${{ inputs.sign && inputs['wix-project'] != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: HnLAustralia/.github
+          ref: ${{ inputs['shared-ci-ref'] }}
+          path: .shared-ci
+          fetch-depth: 1
+
+      # Runs BEFORE the upload, so nothing unsigned is ever published. The check that earns its
+      # place is the executable INSIDE the MSI: both signing steps report success even when the
+      # MSI build has overwritten the signed executable with a freshly published one.
+      #
+      # Chain trust is gated only on PROD. A sandbox signature reaches no trusted root, so
+      # demanding it there would be a permanently red build; demanding it on PROD is what stops a
+      # silent downgrade back to a demo certificate, which the issuer check cannot catch because
+      # SSL Corp issues both.
+      - name: Verify signatures
+        if: ${{ inputs.sign && inputs['wix-project'] != '' }}
+        shell: pwsh
+        run: |
+          $verifyArgs = @{ MsiPath = '${{ steps.msi.outputs.path }}' }
+          if ('${{ inputs['sign-file'] }}') {
+            $verifyArgs.PublishExe = Join-Path '${{ github.workspace }}' '${{ inputs['sign-file'] }}'
+          }
+          if ('${{ inputs['esigner-environment'] }}' -eq 'PROD') { $verifyArgs.ExpectTrusted = $true }
+          & "${{ github.workspace }}/.shared-ci/scripts/verify-signatures.ps1" @verifyArgs
 
       # ================= Artifacts =================
       - name: Artifact metadata
@@ -453,7 +685,20 @@ jobs:
           if ($channel) { $base = "$base-$channel" }
           $name = "${app}_$base"
 
+          # Labels a demo-signed build on the artifact someone is about to download, rather than
+          # only in a log nobody opens once it is green. It also corrects itself: flipping
+          # esigner-environment adds or removes the suffix with nothing here to remember.
+          #
+          # Computed in PowerShell on purpose. The Actions-expression spelling of this
+          # (`cond && '' || '-DEMO-SIGNED'`) reads naturally and is always wrong - an empty string
+          # is falsy, so the true branch collapses into the false one and every build gets
+          # labelled DEMO-SIGNED.
+          if ('${{ inputs.sign }}' -eq 'true' -and '${{ inputs['esigner-environment'] }}' -ne 'PROD') {
+            $name = "$name-DEMO-SIGNED"
+          }
+
           "name=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Artifact name: $name"
 
       - name: Upload Publish Output (if any)
         if: ${{ inputs['publish-profile'] != '' }}
