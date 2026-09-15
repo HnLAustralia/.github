@@ -28,8 +28,19 @@
     chain is trusted is a separate axis this script reports but does not gate on. Nothing here
     changes when the real certificate arrives; the reported status simply becomes Valid.
 
+    ## What this is safe to point at
+
+    Intended for a package the build just produced. Extraction uses an administrative install,
+    and an administrative install runs the MSI's AdminExecuteSequence - so a hostile MSI whose
+    signature nonetheless passes the checks above can execute code. The MSI's own signature is
+    judged before anything is extracted, which stops an unsigned or tampered file, but it does
+    not make this a safe way to inspect a package you do not already trust. For that, extract
+    with something that does not execute MSI actions first.
+
 .PARAMETER MsiPath
-    The built MSI. Required.
+    The built MSI. Optional: omit it to verify only -PublishExe, which is the right mode for a
+    repo that signs an application executable without shipping an installer. One of -MsiPath and
+    -PublishExe must be given.
 
 .PARAMETER PublishExe
     The signed executable in the publish directory, checked as well when supplied. Its result
@@ -62,15 +73,19 @@
     anyone downloading it without failing any build.
 
 .EXAMPLE
-    ./scripts/verify-signatures.ps1 -MsiPath bin/Release/MyService.msi
+    ./scripts/verify-signatures.ps1 -MsiPath bin/Release/MyService.msi -ExecutableName MyService.exe
 
 .EXAMPLE
-    # Against a downloaded release artefact, to answer "was this one actually signed?"
-    ./scripts/verify-signatures.ps1 -MsiPath ~/Downloads/MyService.msi -ExpectTrusted
+    # With the publish copy as well, which localises a failure to the MSI build
+    ./scripts/verify-signatures.ps1 -MsiPath bin/Release/MyService.msi -PublishExe publish/MyService.exe -ExpectTrusted
+
+.EXAMPLE
+    # No installer: verify a signed executable on its own
+    ./scripts/verify-signatures.ps1 -PublishExe publish/MyService.exe -ExpectTrusted
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$MsiPath,
+    [string]$MsiPath,
     [string]$PublishExe,
     [string]$ExecutableName,
     [string]$ExpectedIssuer = 'O=SSL Corp',
@@ -80,22 +95,29 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Which executable to look for inside the MSI. Taken from -ExecutableName, else from the leaf of
-# -PublishExe. One of the two is required: this script's entire job is to check the binary that
-# actually ships, and it cannot guess which of an installer's files that is.
-if (-not $ExecutableName) {
-    if ($PublishExe) {
-        $ExecutableName = Split-Path -Leaf $PublishExe
-    }
-    else {
-        throw "Pass -ExecutableName (or -PublishExe, whose file name is used) so this knows which executable inside the MSI to verify."
-    }
+if (-not $MsiPath -and -not $PublishExe) {
+    throw "Pass -MsiPath, -PublishExe, or both - there is nothing to verify otherwise."
 }
 
-if (-not (Test-Path -LiteralPath $MsiPath)) {
-    throw "MSI not found: $MsiPath"
+if ($MsiPath) {
+    # Which executable to look for inside the MSI. From -ExecutableName, else the leaf of
+    # -PublishExe. Required only in this direction: an installer carries many files and only the
+    # caller knows which one is the application binary this is vouching for. With no MSI there is
+    # nothing to search, so it is not needed at all.
+    if (-not $ExecutableName) {
+        if ($PublishExe) {
+            $ExecutableName = Split-Path -Leaf $PublishExe
+        }
+        else {
+            throw "Pass -ExecutableName (or -PublishExe, whose file name is used) so this knows which executable inside the MSI to verify."
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $MsiPath)) {
+        throw "MSI not found: $MsiPath"
+    }
+    $MsiPath = (Resolve-Path -LiteralPath $MsiPath).Path
 }
-$MsiPath = (Resolve-Path -LiteralPath $MsiPath).Path
 
 $results = [System.Collections.Generic.List[object]]::new()
 
@@ -193,17 +215,72 @@ function Get-SignatureProblems {
     return $problems
 }
 
+function Write-Report {
+    $results | Format-Table What, Signed, FromIssuer, Timestamped, Trusted, Status -AutoSize |
+        Out-String | Write-Host
+    foreach ($r in $results) {
+        Write-Host "$($r.What)"
+        Write-Host "    signed by : $($r.Subject)"
+        Write-Host "    issued by : $($r.Issuer)"
+        Write-Host "    timestamp : $($r.TimestampIssuer)"
+    }
+}
+
+function Test-Verdict {
+    $problems = @(Get-SignatureProblems -Items $results)
+
+    # Say the specific thing rather than leaving whoever reads this to work it out. This exact
+    # combination has one cause: something re-published the project between signing and the
+    # MSI build.
+    $msiOnly = ($results | Where-Object { $_.What -eq 'MSI' -and $_.Signed }) -and
+               ($results | Where-Object { $_.What -eq 'Executable (inside MSI)' -and -not $_.Signed })
+    if ($msiOnly) {
+        $problems += ("The MSI is signed but the executable inside it is not. The MSI build " +
+                      "overwrote the signed executable - pass -p:BuildProjectReferences=false " +
+                      "to the wixproj build, or sign later in the sequence.")
+    }
+
+    if ($problems.Count -gt 0) {
+        Write-Host ''
+        foreach ($p in $problems) { Write-Host "FAIL: $p" }
+        throw "Signature verification failed with $($problems.Count) problem(s)."
+    }
+
+    if (-not $ExpectTrusted) {
+        Write-Host ''
+        Write-Host ('NOTE: signatures are present and timestamped, but chain trust was NOT ' +
+                    'required. Expected while signing with the SSL.com sandbox certificate. ' +
+                    'Re-run with -ExpectTrusted once the real certificate is in use.')
+    }
+
+    Write-Host ''
+    Write-Host 'Signature verification passed.'
+}
+
 # ---------------------------------------------------------------------------
 # The MSI, and the executable it was built from
 # ---------------------------------------------------------------------------
 
-Add-Result -What 'MSI' -Path $MsiPath
+if ($MsiPath) {
+    Add-Result -What 'MSI' -Path $MsiPath
+}
 
 if ($PublishExe) {
     if (-not (Test-Path -LiteralPath $PublishExe)) {
         throw "Publish executable not found: $PublishExe"
     }
     Add-Result -What 'Executable (publish dir)' -Path (Resolve-Path -LiteralPath $PublishExe).Path
+}
+
+# No MSI is a legitimate mode, not a mistake: a repo can sign an application executable without
+# shipping an installer. There is nothing to extract, so the checks that matter - signed,
+# timestamped, right issuer, and chain trust under -ExpectTrusted - simply run against the
+# executable itself. The alternative, skipping verification whenever there is no MSI, silently
+# left that whole mode ungated.
+if (-not $MsiPath) {
+    Write-Report
+    Test-Verdict
+    return
 }
 
 # ---------------------------------------------------------------------------
@@ -256,47 +333,8 @@ try {
 
     Add-Result -What 'Executable (inside MSI)' -Path $extracted[0].FullName
 
-    $results | Format-Table What, Signed, FromIssuer, Timestamped, Trusted, Status -AutoSize |
-        Out-String | Write-Host
-    foreach ($r in $results) {
-        Write-Host "$($r.What)"
-        Write-Host "    signed by : $($r.Subject)"
-        Write-Host "    issued by : $($r.Issuer)"
-        Write-Host "    timestamp : $($r.TimestampIssuer)"
-    }
-
-    # -----------------------------------------------------------------------
-    # Verdict
-    # -----------------------------------------------------------------------
-
-    $problems = @(Get-SignatureProblems -Items $results)
-
-    # Say the specific thing rather than leaving whoever reads this to work it out. This exact
-    # combination has one cause: something re-published the project between signing and the
-    # MSI build.
-    $msiOnly = ($results | Where-Object { $_.What -eq 'MSI' -and $_.Signed }) -and
-               ($results | Where-Object { $_.What -eq 'Executable (inside MSI)' -and -not $_.Signed })
-    if ($msiOnly) {
-        $problems += ("The MSI is signed but the executable inside it is not. The MSI build " +
-                      "overwrote the signed executable - pass -p:BuildProjectReferences=false " +
-                      "to the wixproj build, or sign later in the sequence.")
-    }
-
-    if ($problems.Count -gt 0) {
-        Write-Host ''
-        foreach ($p in $problems) { Write-Host "FAIL: $p" }
-        throw "Signature verification failed with $($problems.Count) problem(s)."
-    }
-
-    if (-not $ExpectTrusted) {
-        Write-Host ''
-        Write-Host ('NOTE: signatures are present and timestamped, but chain trust was NOT ' +
-                    'required. Expected while signing with the SSL.com sandbox certificate. ' +
-                    'Re-run with -ExpectTrusted once the real certificate is in use.')
-    }
-
-    Write-Host ''
-    Write-Host 'Signature verification passed.'
+    Write-Report
+    Test-Verdict
 }
 finally {
     Remove-Item -LiteralPath $extractRoot -Recurse -Force -ErrorAction SilentlyContinue

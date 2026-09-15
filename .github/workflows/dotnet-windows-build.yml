@@ -688,7 +688,7 @@ jobs:
       # persist-credentials: false because nothing here needs to authenticate - this repo is
       # public - and the default would otherwise leave a token in .shared-ci/.git/config.
       - name: Check out shared signing scripts
-        if: ${{ inputs.sign && inputs['wix-project'] != '' }}
+        if: ${{ inputs.sign }}
         uses: actions/checkout@v4
         with:
           repository: HnLAustralia/.github
@@ -706,18 +706,24 @@ jobs:
       # silent downgrade back to a demo certificate, which the issuer check cannot catch because
       # SSL Corp issues both.
       - name: Verify signatures
-        if: ${{ inputs.sign && inputs['wix-project'] != '' }}
+        if: ${{ inputs.sign }}
         shell: pwsh
         run: |
-          # ExecutableName is what the script looks for inside the MSI. It comes from sign-file
-          # rather than being assumed, so this works for any repo's installer - the guard above
-          # has already established sign-file is set whenever an MSI is being signed.
+          # Runs for every signing configuration, not just the ones that build an MSI. An
+          # app-only signer still needs its timestamp, issuer and - on PROD - chain trust checked;
+          # gating this on wix-project left that mode signing things and verifying nothing.
           $signFile = '${{ inputs['sign-file'] }}'
-          $verifyArgs = @{
-            MsiPath        = '${{ steps.msi.outputs.path }}'
-            PublishExe     = Join-Path '${{ github.workspace }}' $signFile
-            ExecutableName = Split-Path -Leaf $signFile
+          $verifyArgs = @{}
+          if ($signFile) {
+            $verifyArgs.PublishExe = Join-Path '${{ github.workspace }}' $signFile
+            # What to look for inside the MSI, derived from sign-file rather than assumed, so
+            # this works for any repo's installer.
+            $verifyArgs.ExecutableName = Split-Path -Leaf $signFile
           }
+          # Empty when there is no installer: that step is skipped, and the script then verifies
+          # the executable on its own.
+          $msiPath = '${{ steps.msi.outputs.path }}'
+          if ($msiPath) { $verifyArgs.MsiPath = $msiPath }
           if ('${{ inputs['esigner-environment'] }}' -eq 'PROD') { $verifyArgs.ExpectTrusted = $true }
           & "${{ github.workspace }}/.shared-ci/scripts/verify-signatures.ps1" @verifyArgs
 
@@ -741,6 +747,16 @@ jobs:
           # Labels a demo-signed build on the artifact someone is about to download, rather than
           # only in a log nobody opens once it is green. It also corrects itself: flipping
           # esigner-environment adds or removes the suffix with nothing here to remember.
+          #
+          # The suffix lands after the channel, so the name becomes ..._build-<v>-alpha-DEMO-
+          # SIGNED-msi, and promote-installer.yml resolves artifacts with anchored patterns
+          # (-alpha-msi$, -beta-msi$, -<version>-release-msi$). A demo-signed MSI therefore cannot
+          # be promoted. That is the intended outcome and the placement is deliberate: a sandbox
+          # signature chains to no trusted root, so shipping one to a customer machine is worse
+          # than a failed promotion. Moving the marker earlier in the name would make these
+          # promotable, which is exactly what must not happen. The cost is that promote fails
+          # with "No matching artifact found" rather than something clearer - worth fixing in
+          # that workflow, not by making these artifacts findable here.
           #
           # Computed in PowerShell on purpose. The Actions-expression spelling of this
           # (`cond && '' || '-DEMO-SIGNED'`) reads naturally and is always wrong - an empty string
