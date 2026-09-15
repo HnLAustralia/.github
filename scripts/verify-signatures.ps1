@@ -223,6 +223,16 @@ try {
                 $problems += ("$($r.What) has been MODIFIED since it was signed - the " +
                               "signature no longer matches the file ($($r.Path))")
             }
+            # Exactly two statuses are legitimate here: Valid (real certificate, trusted chain)
+            # and NotTrusted (sandbox certificate, which reaches no trusted root by design).
+            # Everything else - UnknownError, Incompatible, and the rest of the enum - still
+            # carries a SignerCertificate, so it passes the signed/issuer/timestamp columns and
+            # would otherwise be reported as verified. Whitelisting the two expected values means
+            # a status nobody anticipated fails loudly instead of quietly counting as success.
+            elseif ($r.Status -notin @('Valid', 'NotTrusted')) {
+                $problems += ("$($r.What) has an unexpected signature status '$($r.Status)' - " +
+                              "only Valid or NotTrusted are expected ($($r.Path))")
+            }
         }
 
         if ($ExpectTrusted -and -not $r.Trusted) {

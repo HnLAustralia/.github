@@ -595,7 +595,12 @@ jobs:
             # Same reason the WiX 3 path sets it: the application has already been published and
             # signed by this point, and a .wixproj that project-references it would rebuild it
             # here - harvesting something other than what was signed.
-            '-p:BuildProjectReferences=false'
+            '-p:BuildProjectReferences=false',
+            # Platform drives InstallerPlatform in the WiX SDK unless the .wixproj pins it
+            # (verified: a bare WiX 6 project defaults to x86 and follows -p:Platform=x64). The
+            # WiX 3 path forwards wix-platform; without this the WiX 6 path would quietly ignore
+            # a caller asking for x64 and ship an installer for the wrong architecture.
+            '-p:Platform=${{ inputs['wix-platform'] }}'
           )
           $version = '${{ steps.set-version.outputs.version }}'
           if ($version) { $buildArgs += "-p:Version=$version" }
