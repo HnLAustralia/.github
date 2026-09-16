@@ -480,9 +480,17 @@ jobs:
             /p:BuildChannel=${{ steps.channel.outputs.value }} ^
             /v:m
 
+      # No -r here, deliberately. The SDK rejects a RID on a solution outright - NETSDK1134,
+      # "Building a solution with a specific RuntimeIdentifier is not supported" - and every
+      # caller passes a .sln. Restore still takes the RID, so the RID-specific assets exist, and
+      # Publish passes it where it actually matters. Test then runs --no-build against this
+      # output, so the two must agree on having no RID subfolder.
+      #
+      # This went unnoticed because no caller reached this step: the legacy repos set
+      # build-with-msbuild, and the rest use a publish-profile, both of which skip it.
       - name: Build
         if: ${{ !inputs['build-with-msbuild'] && inputs['wix-project'] != '' && inputs['publish-profile'] == '' }}
-        run: dotnet build "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" -r "${{ inputs.runtime }}" --no-restore
+        run: dotnet build "${{ inputs['project-or-solution'] }}" -c "${{ inputs.configuration }}" --no-restore
 
       - name: Test
         if: ${{ inputs['run-tests'] }}
