@@ -661,8 +661,11 @@ jobs:
           # repos, so a channel rename must not quietly leave the MSI unsigned while this step
           # still reports success. Exactly one is expected - more than one means the glob is
           # picking up a stale build and signing the wrong file is worse than failing here.
+          #
+          # obj is excluded because WiX 6 leaves an intermediate copy of the .msi there as well
+          # as in bin, so an unfiltered workspace search finds two of everything.
           $found = @(Get-ChildItem -Path "${{ github.workspace }}" -Filter *.msi -Recurse |
-            Where-Object { $_.FullName -notlike "*_msi_staging*" })
+            Where-Object { $_.FullName -notlike "*_msi_staging*" -and $_.FullName -notlike "*\obj\*" })
           if ($found.Count -ne 1) {
             throw "Expected exactly one MSI, found $($found.Count): $($found.FullName -join ', ')"
           }
@@ -791,9 +794,12 @@ jobs:
         if: ${{ inputs['wix-project'] != '' }}
         shell: pwsh
         run: |
+          # Same obj exclusion as the locate step, and here it matters more than tidiness: both
+          # copies share a file name, so -Force would let the unsigned obj copy overwrite the
+          # signed one from bin and the upload would ship that.
           New-Item -Path "${{ github.workspace }}/_msi_staging" -ItemType Directory -Force | Out-Null
           Get-ChildItem -Path "${{ github.workspace }}" -Filter *.msi -Recurse |
-            Where-Object { $_.FullName -notlike "*_msi_staging*" } |
+            Where-Object { $_.FullName -notlike "*_msi_staging*" -and $_.FullName -notlike "*\obj\*" } |
             ForEach-Object { Copy-Item $_.FullName -Destination "${{ github.workspace }}/_msi_staging/$($_.Name)" -Force }
 
       - name: Upload MSI (if any)
